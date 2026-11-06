@@ -17,19 +17,27 @@
 // Relocation tests reuse the same dynamic ELF fixture and observed mapping.
 #[path = "relocation.rs"]
 mod relocation;
+#[path = "seal.rs"]
+mod seal;
 
 use super::fixture::{ElfFixtureBuilder, ProgramHeaderFixture};
 use crate::{
     elf::RelocationAddend,
     error::{ErrorContext, LimitKind, LoadErrorKind, LoadStage},
     image::{DecodedImage, ImageLoader, LoadRequest, PlannedImage},
-    memory::{AllocationOffset, ImageLayout, Placement, TargetAddress},
+    memory::{
+        AllocationOffset, ImageLayout, MemoryPermissions, Placement, ProtectionLevel,
+        ProtectionRange, TargetAddress,
+    },
     profile::{ElfClass, ElfData, LoadLimits, LoadProfile, LoadPurpose},
     ElfReader, ImageAllocator, ImageMapping, LoadError, LoadResult,
 };
 use alloc::{rc::Rc, vec, vec::Vec};
 use blueos_test_macro::test;
-use core::{cell::Cell, ops::Range};
+use core::{
+    cell::{Cell, RefCell},
+    ops::Range,
+};
 use goblin::elf::{
     dynamic::{
         DF_1_NOW, DF_1_PIE, DF_BIND_NOW, DF_TEXTREL, DT_BIND_NOW, DT_DEBUG, DT_FLAGS, DT_FLAGS_1,
@@ -276,6 +284,10 @@ struct State {
     live: Cell<usize>,
     fail_read: Cell<Option<usize>>,
     fail_write: Cell<Option<usize>>,
+    protection_level: Cell<ProtectionLevel>,
+    protects: Cell<usize>,
+    protection: RefCell<Vec<ProtectionRange>>,
+    fail_protect: Cell<Option<usize>>,
 }
 
 #[must_use = "the input retains its read observer"]
@@ -367,6 +379,27 @@ impl Allocation {
     }
 }
 impl ImageMapping for Allocation {
+    fn protection_level(&self) -> ProtectionLevel {
+        self.state.protection_level.get()
+    }
+
+    fn set_permissions(
+        &mut self,
+        offset: AllocationOffset,
+        len: u64,
+        permissions: MemoryPermissions,
+    ) -> LoadResult<()> {
+        self.state.protects.set(self.state.protects.get() + 1);
+        self.state
+            .protection
+            .borrow_mut()
+            .push(ProtectionRange::new(offset, len, permissions));
+        if self.state.fail_protect.get() == Some(self.state.protects.get()) {
+            return Err(LoadError::new(LoadErrorKind::Backend, ErrorContext::None));
+        }
+        Ok(())
+    }
+
     fn base(&self) -> TargetAddress {
         self.base
     }

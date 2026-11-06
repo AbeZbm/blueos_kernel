@@ -20,7 +20,7 @@ use crate::{
     image::{ImageLoader, LoadRequest, PlannedImage},
     memory::{
         AllocationOffset, ImageLayout, MemoryMapper, MemoryPermissions, MemoryRegion, Placement,
-        SegmentLayout, TargetAddress, TargetRange,
+        ProtectionLevel, SegmentLayout, TargetAddress, TargetRange,
     },
     profile::{ElfClass, LoadLimits, LoadProfile},
     ElfReader, ImageAllocator, ImageMapping, LoadError, LoadResult,
@@ -212,6 +212,19 @@ impl ImageAllocator for MockMemory {
 }
 
 impl ImageMapping for MockAllocation {
+    fn protection_level(&self) -> ProtectionLevel {
+        ProtectionLevel::LogicalOnly
+    }
+
+    fn set_permissions(
+        &mut self,
+        _offset: AllocationOffset,
+        _len: u64,
+        _permissions: MemoryPermissions,
+    ) -> LoadResult<()> {
+        Ok(())
+    }
+
     fn base(&self) -> TargetAddress {
         self.base
     }
@@ -700,7 +713,9 @@ fn mapping_runs_with_flat_owned_and_fixed_backends() {
         MemoryRegion::new(
             base,
             base + 128,
-            MemoryPermissions::READ.bitor(MemoryPermissions::WRITE),
+            MemoryPermissions::READ
+                .bitor(MemoryPermissions::WRITE)
+                .bitor(MemoryPermissions::EXECUTE),
         )
     };
     let regions = Box::leak(Box::new([region]));
@@ -779,7 +794,9 @@ fn mapping_fixed_input_failure_releases_region_for_a_fresh_load() {
             MemoryRegion::new(
                 base,
                 base + 1536,
-                MemoryPermissions::READ.bitor(MemoryPermissions::WRITE),
+                MemoryPermissions::READ
+                    .bitor(MemoryPermissions::WRITE)
+                    .bitor(MemoryPermissions::EXECUTE),
             )
         };
         let regions = Box::leak(Box::new([region]));
@@ -824,9 +841,16 @@ fn mapping_fixed_input_failure_releases_region_for_a_fresh_load() {
             .map()
             .unwrap();
         mapped
-            .read(AllocationOffset::new(0), &mut contents)
+            .read(AllocationOffset::new(0), &mut contents[..1221])
             .unwrap();
         assert_eq!(&contents[..1200], &bytes[PAYLOAD..]);
         assert_eq!(&contents[1200..1221], &[0; 21]);
+        assert_eq!(
+            mapped
+                .read(AllocationOffset::new(1221), &mut [0; 11])
+                .unwrap_err()
+                .kind(),
+            LoadErrorKind::PermissionConflict
+        );
     }
 }

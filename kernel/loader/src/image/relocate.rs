@@ -14,10 +14,12 @@
 
 //! A relocated image awaiting cache synchronization and final protection.
 
-use super::LoadRequest;
+use super::{seal::SealedImage, LoadRequest};
 use crate::{
     elf::{DynamicInfo, LoadSegmentInfo, RelocationRecord},
-    memory::{ImageMapping, TargetAddress, TargetRange},
+    error::{ErrorContext, LoadErrorKind, LoadStage},
+    memory::{AllocationOffset, ImageMapping, MemoryPermissions, TargetAddress, TargetRange},
+    CodeCache, LoadError, LoadResult,
 };
 use alloc::vec::Vec;
 
@@ -34,6 +36,83 @@ pub(crate) struct RelocatedImage<A: ImageMapping> {
 }
 
 impl<A: ImageMapping> RelocatedImage<A> {
+    pub(crate) fn seal<C: CodeCache + ?Sized>(self, cache: &mut C) -> LoadResult<SealedImage<A>> {
+        self.seal_inner(cache)
+            .map_err(|error| error.at_stage(LoadStage::Seal))
+    }
+
+    fn seal_inner<C: CodeCache + ?Sized>(mut self, cache: &mut C) -> LoadResult<SealedImage<A>> {
+        let protection_level = self.allocation.protection_level();
+        self.request
+            .profile()
+            .check_protection_level(protection_level)?;
+        let base = self.allocation.base();
+        base.checked_add(self.allocation.len())?;
+        // Ordinary segment permissions are already active. Publish completed
+        // code writes before execution and before closing writable RELRO.
+        for segment in &self.segments {
+            if segment.permissions().contains(MemoryPermissions::EXECUTE) {
+                let start =
+                    base.checked_add(segment.vaddr().checked_sub(self.image_range.start())?)?;
+                cache
+                    .synchronize(TargetRange::new(start, segment.memory_size()))
+                    .map_err(|error| {
+                        error.with_context(ErrorContext::TargetRange {
+                            start,
+                            len: segment.memory_size(),
+                            align: 1,
+                        })
+                    })?;
+            }
+        }
+        if let Some(relro) = self.relro.filter(|range| !range.is_empty()) {
+            let segment = self
+                .segments
+                .iter()
+                .find(|segment| {
+                    TargetRange::new(segment.vaddr(), segment.memory_size())
+                        .contains_span(relro.start(), relro.len())
+                })
+                .ok_or_else(|| {
+                    LoadError::new(
+                        LoadErrorKind::BadElf,
+                        ErrorContext::TargetRange {
+                            start: relro.start(),
+                            len: relro.len(),
+                            align: 0,
+                        },
+                    )
+                })?;
+            let offset =
+                AllocationOffset::new(relro.start().checked_sub(self.image_range.start())?);
+            self.allocation
+                .set_permissions(
+                    offset,
+                    relro.len(),
+                    segment.permissions().without(MemoryPermissions::WRITE),
+                )
+                .map_err(|error| {
+                    error.with_context(ErrorContext::MemoryAccess {
+                        allocation_base: base,
+                        allocation_len: self.allocation.len(),
+                        allocation_align: self.allocation.align(),
+                        offset: offset.value(),
+                        len: relro.len(),
+                    })
+                })?;
+        }
+        Ok(SealedImage {
+            allocation: self.allocation,
+            request: self.request,
+            segments: self.segments,
+            image_range: self.image_range,
+            entry: self.entry,
+            dynamic: self.dynamic,
+            relro: self.relro,
+            protection_level,
+        })
+    }
+
     pub(crate) const fn allocation(&self) -> &A {
         &self.allocation
     }

@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Single-image validation, layout, mapping, decoding and relative relocation.
-//! Follow admit, inspect, plan, allocate, map, decode, then relocate. Planning
+//! Single-image validation, layout, mapping, relocation and memory finalization.
+//! Follow admit, inspect, plan, allocate, map, decode, relocate, then seal. Planning
 //! scans dynamic tags once from the stable reader; decode reads records from the
-//! mapped image. Relative relocation validates every write before applying any;
-//! cache synchronization and protection follow later.
+//! mapped image. Map applies segment/hole permissions after all initialization;
+//! relocation validates every write before applying any. Seal synchronizes code
+//! and removes RELRO writes.
 //! ELF table parsing and record formats are implemented in `crate::elf`.
 
 mod admit;
@@ -27,9 +28,11 @@ mod inspect;
 mod map;
 mod plan;
 mod relocate;
+mod seal;
 
 pub(crate) use decode::DecodedImage;
 pub(crate) use image_loader::{ImageLoader, LoadRequest};
 pub(crate) use map::MappedImage;
 pub(crate) use plan::PlannedImage;
 pub(crate) use relocate::RelocatedImage;
+pub(crate) use seal::SealedImage;

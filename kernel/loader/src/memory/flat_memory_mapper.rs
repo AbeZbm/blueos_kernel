@@ -14,6 +14,7 @@
 
 //! Flat image allocations and their authorized fixed-address regions.
 
+use alloc::vec::Vec;
 use blueos_infra::storage::Storage;
 use core::{
     alloc::Layout,
@@ -24,7 +25,7 @@ use crate::{
     error::{ErrorContext, LoadErrorKind},
     memory::{
         AllocationOffset, ImageAllocator, ImageLayout, ImageMapping, MemoryPermissions, Placement,
-        TargetAddress,
+        ProtectionLevel, ProtectionRange, TargetAddress,
     },
     LoadError, LoadResult,
 };
@@ -65,6 +66,8 @@ impl MemoryRegion {
 ///
 /// Backing belongs to the returned allocation, so the mapper may be dropped
 /// or reused while an allocation remains alive.
+/// Prepared allocations initially permit loader reads and writes; subsequent
+/// permission updates constrain mapper accesses without changing CPU rights.
 #[derive(Debug)]
 pub struct MemoryMapper {
     regions: &'static [MemoryRegion],
@@ -127,6 +130,7 @@ pub struct FlatImageAllocation {
     base: TargetAddress,
     len: u64,
     align: u64,
+    protection: Vec<ProtectionRange>,
 }
 
 impl Drop for FlatImageAllocation {
@@ -139,12 +143,30 @@ impl Drop for FlatImageAllocation {
 }
 
 impl FlatImageAllocation {
-    fn image_span(&self, offset: AllocationOffset, len: u64) -> LoadResult<*mut u8> {
+    fn image_span(
+        &self,
+        offset: AllocationOffset,
+        len: u64,
+        permissions: MemoryPermissions,
+    ) -> LoadResult<*mut u8> {
         let end = offset
             .value()
             .checked_add(len)
             .filter(|end| *end <= self.len)
             .ok_or_else(|| memory_access_error(self, offset, len))?;
+        if len != 0
+            && self.protection.iter().any(|range| {
+                let start = range.allocation_offset().value();
+                offset.value() < start + range.len()
+                    && end > start
+                    && !range.permissions().contains(permissions)
+            })
+        {
+            return Err(LoadError::new(
+                LoadErrorKind::PermissionConflict,
+                memory_access_context(self, offset, len),
+            ));
+        }
         let offset_usize =
             usize::try_from(offset.value()).map_err(|_| memory_access_error(self, offset, len))?;
         let end = usize::try_from(end).map_err(|_| memory_access_error(self, offset, len))?;
@@ -211,7 +233,17 @@ impl ImageAllocator for MemoryMapper {
             base,
             len: layout.size(),
             align: layout.align(),
+            protection: Vec::new(),
         };
+        allocation
+            .protection
+            .try_reserve_exact(1)
+            .map_err(|_| LoadError::new(LoadErrorKind::OutOfMemory, ErrorContext::None))?;
+        allocation.protection.push(ProtectionRange::new(
+            AllocationOffset::new(0),
+            layout.size(),
+            MemoryPermissions::READ.bitor(MemoryPermissions::WRITE),
+        ));
         // Initialize the complete flat span, including holes, before safe reads.
         // Fixed storage is a disposable loading workspace, not an old image to restore.
         allocation.zero(AllocationOffset::new(0), layout.size())?;
@@ -235,7 +267,7 @@ impl ImageMapping for FlatImageAllocation {
     fn read(&self, offset: AllocationOffset, dst: &mut [u8]) -> LoadResult<()> {
         let len =
             u64::try_from(dst.len()).map_err(|_| memory_access_error(self, offset, u64::MAX))?;
-        let source = self.image_span(offset, len)?;
+        let source = self.image_span(offset, len, MemoryPermissions::READ)?;
         if !dst.is_empty() {
             // SAFETY: checked initialized backing remains owned or exclusively
             // borrowed by self; dst is a disjoint exclusive slice.
@@ -247,7 +279,7 @@ impl ImageMapping for FlatImageAllocation {
     fn write(&mut self, offset: AllocationOffset, data: &[u8]) -> LoadResult<()> {
         let len =
             u64::try_from(data.len()).map_err(|_| memory_access_error(self, offset, u64::MAX))?;
-        let target = self.image_span(offset, len)?;
+        let target = self.image_span(offset, len, MemoryPermissions::WRITE)?;
         if !data.is_empty() {
             // SAFETY: the checked target is exclusively owned or borrowed by self
             // and does not overlap the readable input slice.
@@ -257,7 +289,7 @@ impl ImageMapping for FlatImageAllocation {
     }
 
     fn zero(&mut self, offset: AllocationOffset, len: u64) -> LoadResult<()> {
-        let target = self.image_span(offset, len)?;
+        let target = self.image_span(offset, len, MemoryPermissions::WRITE)?;
         let count = usize::try_from(len).map_err(|_| memory_access_error(self, offset, len))?;
         if count != 0 {
             // SAFETY: image_span checked the exclusively owned/borrowed range.
@@ -265,6 +297,103 @@ impl ImageMapping for FlatImageAllocation {
         }
         Ok(())
     }
+
+    fn protection_level(&self) -> ProtectionLevel {
+        ProtectionLevel::LogicalOnly
+    }
+
+    fn set_permissions(
+        &mut self,
+        offset: AllocationOffset,
+        len: u64,
+        permissions: MemoryPermissions,
+    ) -> LoadResult<()> {
+        let fail = |kind| LoadError::new(kind, memory_access_context(self, offset, len));
+        let start = offset.value();
+        let end = start
+            .checked_add(len)
+            .ok_or_else(|| fail(LoadErrorKind::IntegerOverflow))?;
+        if end > self.len {
+            return Err(fail(LoadErrorKind::OutOfBounds));
+        }
+        if len == 0 {
+            return Ok(());
+        }
+        if let FlatBacking::Fixed(region) = &self.backing {
+            if !region.permissions.contains(permissions) {
+                return Err(fail(LoadErrorKind::PermissionConflict));
+            }
+        }
+
+        let previous = &self.protection;
+        // One interval update splits at most two existing ranges. Reserving
+        // this bound makes the following pushes fallible only before mutation.
+        let capacity = previous
+            .len()
+            .checked_add(2)
+            .ok_or_else(|| fail(LoadErrorKind::OutOfMemory))?;
+        let mut protection = Vec::new();
+        protection
+            .try_reserve_exact(capacity)
+            .map_err(|_| LoadError::new(LoadErrorKind::OutOfMemory, ErrorContext::None))?;
+        for range in previous {
+            let old_start = range.allocation_offset().value();
+            // Stored ranges were already checked against the allocation.
+            let old_end = old_start + range.len();
+            if old_end <= start || old_start >= end {
+                append_protection(&mut protection, old_start, range.len(), range.permissions());
+                continue;
+            }
+            if old_start < start {
+                append_protection(
+                    &mut protection,
+                    old_start,
+                    start - old_start,
+                    range.permissions(),
+                );
+            }
+            let overlap_start = old_start.max(start);
+            let overlap_end = old_end.min(end);
+            append_protection(
+                &mut protection,
+                overlap_start,
+                overlap_end - overlap_start,
+                permissions,
+            );
+            if old_end > end {
+                append_protection(&mut protection, end, old_end - end, range.permissions());
+            }
+        }
+        // This restricts mapper accesses only. Native CPU access is unchanged.
+        self.protection = protection;
+        Ok(())
+    }
+}
+
+// The caller reserves enough capacity for every fragment before any push.
+fn append_protection(
+    ranges: &mut Vec<ProtectionRange>,
+    start: u64,
+    len: u64,
+    permissions: MemoryPermissions,
+) {
+    if let Some(previous) = ranges.last_mut() {
+        if previous.permissions() == permissions
+            && previous.allocation_offset().value() + previous.len() == start
+        {
+            *previous = ProtectionRange::new(
+                previous.allocation_offset(),
+                previous.len() + len,
+                permissions,
+            );
+            return;
+        }
+    }
+    ranges.push(ProtectionRange::new(
+        AllocationOffset::new(start),
+        len,
+        permissions,
+    ));
 }
 
 fn allocation_error(layout: &ImageLayout) -> LoadError {
@@ -285,12 +414,20 @@ fn memory_access_error(
 ) -> LoadError {
     LoadError::new(
         LoadErrorKind::Backend,
-        ErrorContext::MemoryAccess {
-            allocation_base: allocation.base,
-            allocation_len: allocation.len,
-            allocation_align: allocation.align,
-            offset: offset.value(),
-            len,
-        },
+        memory_access_context(allocation, offset, len),
     )
+}
+
+fn memory_access_context(
+    allocation: &FlatImageAllocation,
+    offset: AllocationOffset,
+    len: u64,
+) -> ErrorContext {
+    ErrorContext::MemoryAccess {
+        allocation_base: allocation.base,
+        allocation_len: allocation.len,
+        allocation_align: allocation.align,
+        offset: offset.value(),
+        len,
+    }
 }

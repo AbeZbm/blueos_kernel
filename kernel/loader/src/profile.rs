@@ -17,7 +17,7 @@
 use crate::{
     elf::{DynamicInfo, ElfHeaderInfo, ElfType, RelocationAddend, RelocationRecord},
     error::{ErrorContext, HeaderField, LimitKind, LoadErrorKind, ProgramHeaderField},
-    memory::MemoryPermissions,
+    memory::{MemoryPermissions, ProtectionLevel},
     LoadError, LoadResult,
 };
 use goblin::elf::{
@@ -280,9 +280,35 @@ pub struct LoadProfile {
     entry_mode: EntryMode,
     program_headers: ProgramHeaderPolicy,
     segment_permissions: SegmentPermissionPolicy,
+    required_protection: ProtectionLevel,
 }
 
 impl LoadProfile {
+    pub const fn required_protection(&self) -> ProtectionLevel {
+        self.required_protection
+    }
+
+    /// Require hardware enforcement, or permit the flat backend's logical policy.
+    pub const fn with_required_protection(mut self, level: ProtectionLevel) -> Self {
+        self.required_protection = level;
+        self
+    }
+
+    pub(crate) fn check_protection_level(&self, provided: ProtectionLevel) -> LoadResult<()> {
+        if self.required_protection == ProtectionLevel::HardwareEnforced
+            && provided != ProtectionLevel::HardwareEnforced
+        {
+            return Err(LoadError::new(
+                LoadErrorKind::UnsupportedByProfile,
+                ErrorContext::Protection {
+                    required: self.required_protection,
+                    provided,
+                },
+            ));
+        }
+        Ok(())
+    }
+
     /// Admit currently implemented single-image operations and explicit addends.
     /// `None` denotes a no-op; `Some` supplies the RELATIVE addend.
     pub(crate) fn check_relative_relocation(
@@ -424,6 +450,7 @@ impl LoadProfile {
             header_flags,
             entry_mode,
             segment_permissions: SegmentPermissionPolicy::DEFAULT,
+            required_protection: ProtectionLevel::LogicalOnly,
             program_headers: ProgramHeaderPolicy::new(
                 match machine {
                     ElfMachine::Riscv => DEFAULT_PROGRAM_HEADERS,

@@ -18,7 +18,7 @@ use super::{map::MappedImage, LoadRequest};
 use crate::{
     elf::{DynamicInfo, ElfHeaderInfo, LoadSegmentInfo},
     error::{ErrorContext, LoadErrorKind, LoadStage},
-    memory::{AllocationOffset, ImageMapping, TargetAddress, TargetRange},
+    memory::{AllocationOffset, ImageMapping, MemoryPermissions, TargetAddress, TargetRange},
     reader::ElfReader,
     LoadError, LoadResult,
 };
@@ -113,6 +113,38 @@ impl<R: ElfReader, A: ImageMapping> AllocatedImage<R, A> {
                 self.allocation
                     .zero(offset.checked_add(file.len())?, bss_len)?;
             }
+        }
+        // Every payload copy and BSS clear must finish before any segment
+        // loses its initialization write access. RELRO remains writable for
+        // relocation; seal() removes its WRITE permission separately.
+        // Revoke the reservation first, so restoring segment permissions leaves
+        // every hole and alignment-padding byte at NONE.
+        let len = self.allocation.len();
+        self.allocation
+            .set_permissions(AllocationOffset::new(0), len, MemoryPermissions::NONE)
+            .map_err(|error| {
+                error.with_context(ErrorContext::MemoryAccess {
+                    allocation_base: base,
+                    allocation_len: len,
+                    allocation_align: self.allocation.align(),
+                    offset: 0,
+                    len,
+                })
+            })?;
+        for segment in &self.segments {
+            let offset =
+                AllocationOffset::new(segment.vaddr().checked_sub(self.image_range.start())?);
+            self.allocation
+                .set_permissions(offset, segment.memory_size(), segment.permissions())
+                .map_err(|error| {
+                    error.with_context(ErrorContext::MemoryAccess {
+                        allocation_base: base,
+                        allocation_len: len,
+                        allocation_align: self.allocation.align(),
+                        offset: offset.value(),
+                        len: segment.memory_size(),
+                    })
+                })?;
         }
         Ok(MappedImage {
             allocation: self.allocation,

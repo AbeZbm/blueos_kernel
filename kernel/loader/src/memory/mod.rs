@@ -17,16 +17,21 @@
 //! Submit one complete `ImageLayout` to `ImageAllocator::prepare_image`. The
 //! returned `ImageMapping` owns its backing or the exclusive use of borrowed
 //! storage. Moving it retains that storage; dropping it releases the resources.
+//! Mappings begin with loader read/write access. After copying and BSS zeroing,
+//! apply segment permissions through `ImageMapping::set_permissions`. After relocation,
+//! synchronize executable ranges through `CodeCache` and remove RELRO writes.
 
 pub(crate) mod address;
 mod flat_memory_mapper;
 mod layout;
+mod protection;
 
 use crate::LoadResult;
 
 pub use address::{TargetAddress, TargetRange};
 pub use flat_memory_mapper::{FlatImageAllocation, MemoryMapper, MemoryRegion};
 pub use layout::{AllocationOffset, ImageLayout, MemoryPermissions, Placement, SegmentLayout};
+pub use protection::{ProtectionLevel, ProtectionRange};
 
 /// Prepares image storage and transfers its lifetime to the returned mapping.
 ///
@@ -39,8 +44,17 @@ pub trait ImageAllocator {
     /// Prepare the complete logical reservation and every listed segment.
     ///
     /// All offsets share one target execution base. Physical backing may be
-    /// scattered and gaps need not be backed. Each listed segment must support
-    /// loader reads and writes until final protection is applied later.
+    /// scattered and gaps need not be backed. On success, EVERY listed segment
+    /// must immediately support `ImageMapping::read`, `write` and `zero`,
+    /// regardless of its eventual `SegmentLayout::permissions()`. This initial
+    /// read/write access is needed to copy file contents and clear BSS, including
+    /// segments that will become read-only or executable. It lasts until the
+    /// loader changes the range through `ImageMapping::set_permissions`.
+    ///
+    /// Hardware backends must provide the actual readable/writable mapping or
+    /// initialization access required by those operations; recording R/W flags
+    /// alone is insufficient. Use the layout's eventual permissions to prepare
+    /// suitable backing, including execution support where requested.
     /// Successful reads must never expose uninitialized bytes.
     ///
     /// Borrowed storage must be exclusively available for this mapping. Its
@@ -67,6 +81,9 @@ pub trait ImageAllocator {
 /// and other users have ended before dropping a published mapping.
 ///
 /// Resource-owning implementations should carry type-level `#[must_use]`.
+/// Reads require current READ permission; writes and zeroing require WRITE.
+/// Check those current permissions throughout the mapping's lifetime, including
+/// its initial R/W state. Empty accesses require no permission bits.
 pub trait ImageMapping {
     fn base(&self) -> TargetAddress;
     fn len(&self) -> u64;
@@ -79,6 +96,33 @@ pub trait ImageMapping {
     fn read(&self, offset: AllocationOffset, dst: &mut [u8]) -> LoadResult<()>;
     fn write(&mut self, offset: AllocationOffset, data: &[u8]) -> LoadResult<()>;
     fn zero(&mut self, offset: AllocationOffset, len: u64) -> LoadResult<()>;
+
+    /// Enforcement guaranteed by a successful `set_permissions` call.
+    /// The reported level must remain valid for this mapping's lifetime.
+    fn protection_level(&self) -> ProtectionLevel;
+
+    /// Replace permissions on [offset, offset + len), retaining all other ranges.
+    /// The requested mask replaces the current bits and may add or remove rights.
+    ///
+    /// An empty range within the allocation, including its end, is a no-op.
+    /// Validate overflow, allocation bounds, page/MPU granularity and aliases
+    /// before changing permissions. Reject unsupported boundary-page conflicts;
+    /// do not alter permissions outside the range to satisfy a request.
+    /// NONE may also revoke an unbacked hole, without allocating backing.
+    /// Complete required translation invalidation and architecture barriers
+    /// before returning success. The loader applies ordinary segment permissions
+    /// after initialization, then synchronizes code and closes RELRO later;
+    /// permitting EXECUTE does not authorize execution before cache publication.
+    ///
+    /// Failure may leave partially changed permissions. Drop must still release
+    /// the mapping safely; a borrowed workspace must be prepared afresh before
+    /// another load. LogicalOnly must not be reported as hardware enforcement.
+    fn set_permissions(
+        &mut self,
+        offset: AllocationOffset,
+        len: u64,
+        permissions: MemoryPermissions,
+    ) -> LoadResult<()>;
 }
 
 impl<M: ImageAllocator + ?Sized> ImageAllocator for &mut M {

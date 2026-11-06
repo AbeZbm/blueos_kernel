@@ -18,7 +18,8 @@ use crate::{
     error::{ErrorContext, LoadErrorKind},
     memory::{
         AllocationOffset, ImageAllocator, ImageLayout, ImageMapping, MemoryMapper,
-        MemoryPermissions, MemoryRegion, Placement, SegmentLayout, TargetAddress, TargetRange,
+        MemoryPermissions, MemoryRegion, Placement, ProtectionLevel, SegmentLayout, TargetAddress,
+        TargetRange,
     },
 };
 use alloc::{boxed::Box, vec};
@@ -330,4 +331,310 @@ fn fixed_allocation_retains_exclusive_region_across_mapper_instances() {
         .read(AllocationOffset::new(0), &mut byte)
         .unwrap();
     assert_eq!(byte, [0]);
+}
+
+#[test]
+fn flat_protection_restricts_mapper_reads_writes_and_zeroing() {
+    let rw = MemoryPermissions::READ.bitor(MemoryPermissions::WRITE);
+    let (mut memory, base, _) = fixed_mapper(rw);
+    let mut allocation = memory
+        .prepare_image(&fixed(base as usize as u64, 64))
+        .unwrap();
+    allocation
+        .write(AllocationOffset::new(0), &[7; 64])
+        .unwrap();
+    allocation
+        .set_permissions(AllocationOffset::new(0), 16, MemoryPermissions::READ)
+        .unwrap();
+    allocation
+        .set_permissions(AllocationOffset::new(32), 32, MemoryPermissions::NONE)
+        .unwrap();
+    assert_eq!(allocation.protection_level(), ProtectionLevel::LogicalOnly);
+    allocation
+        .read(AllocationOffset::new(8), &mut [0; 24])
+        .unwrap();
+    allocation
+        .write(AllocationOffset::new(16), &[9; 16])
+        .unwrap();
+    allocation.zero(AllocationOffset::new(16), 16).unwrap();
+    for offset in [0, 32] {
+        assert_eq!(
+            allocation
+                .write(AllocationOffset::new(offset), &[1])
+                .unwrap_err()
+                .kind(),
+            LoadErrorKind::PermissionConflict
+        );
+        assert_eq!(
+            allocation
+                .zero(AllocationOffset::new(offset), 1)
+                .unwrap_err()
+                .kind(),
+            LoadErrorKind::PermissionConflict
+        );
+    }
+    assert_eq!(
+        allocation
+            .write(AllocationOffset::new(8), &[1; 24])
+            .unwrap_err()
+            .kind(),
+        LoadErrorKind::PermissionConflict
+    );
+    assert_eq!(
+        allocation
+            .read(AllocationOffset::new(31), &mut [0; 2])
+            .unwrap_err()
+            .kind(),
+        LoadErrorKind::PermissionConflict
+    );
+    // Empty operations do not touch a byte, even at the end of a NONE range.
+    allocation.read(AllocationOffset::new(64), &mut []).unwrap();
+    allocation.write(AllocationOffset::new(64), &[]).unwrap();
+    allocation.zero(AllocationOffset::new(64), 0).unwrap();
+    drop(allocation);
+    let allocation = memory
+        .prepare_image(&fixed(base as usize as u64, 64))
+        .unwrap();
+    let mut bytes = [1; 64];
+    allocation
+        .read(AllocationOffset::new(0), &mut bytes)
+        .unwrap();
+    assert_eq!(bytes, [0; 64]);
+}
+
+#[test]
+fn flat_protection_rejects_invalid_updates_without_changing_permissions() {
+    let rw = MemoryPermissions::READ.bitor(MemoryPermissions::WRITE);
+    let (mut memory, base, _) = fixed_mapper(rw);
+    let mut allocation = memory
+        .prepare_image(&fixed(base as usize as u64, 64))
+        .unwrap();
+    allocation
+        .set_permissions(AllocationOffset::new(0), 64, MemoryPermissions::READ)
+        .unwrap();
+    for (offset, len, kind) in [
+        (0, 65, LoadErrorKind::OutOfBounds),
+        (65, 0, LoadErrorKind::OutOfBounds),
+        (65, 1, LoadErrorKind::OutOfBounds),
+        (64, 1, LoadErrorKind::OutOfBounds),
+        (u64::MAX, 2, LoadErrorKind::IntegerOverflow),
+        (1, u64::MAX, LoadErrorKind::IntegerOverflow),
+    ] {
+        let error = allocation
+            .set_permissions(AllocationOffset::new(offset), len, rw)
+            .unwrap_err();
+        assert_eq!(error.kind(), kind);
+        assert!(
+            matches!(error.context(), ErrorContext::MemoryAccess { offset: actual_offset, len: actual_len, .. }
+            if *actual_offset == offset && *actual_len == len)
+        );
+        assert_eq!(
+            allocation
+                .write(AllocationOffset::new(0), &[1])
+                .unwrap_err()
+                .kind(),
+            LoadErrorKind::PermissionConflict
+        );
+        allocation
+            .read(AllocationOffset::new(0), &mut [0; 64])
+            .unwrap();
+    }
+    for offset in [0, 64] {
+        allocation
+            .set_permissions(AllocationOffset::new(offset), 0, rw)
+            .unwrap();
+    }
+    assert_eq!(
+        allocation
+            .write(AllocationOffset::new(63), &[1])
+            .unwrap_err()
+            .kind(),
+        LoadErrorKind::PermissionConflict
+    );
+}
+
+#[test]
+fn flat_protection_cannot_exceed_fixed_region_authorization() {
+    let rw = MemoryPermissions::READ.bitor(MemoryPermissions::WRITE);
+    let (mut memory, base, _) = fixed_mapper(rw);
+    let layout = fixed(base as usize as u64, 64);
+    let mut allocation = memory.prepare_image(&layout).unwrap();
+    let rx = MemoryPermissions::READ.bitor(MemoryPermissions::EXECUTE);
+    assert_eq!(
+        allocation
+            .set_permissions(AllocationOffset::new(16), 16, rx)
+            .unwrap_err()
+            .kind(),
+        LoadErrorKind::PermissionConflict
+    );
+    allocation.write(AllocationOffset::new(0), &[1]).unwrap();
+    allocation
+        .set_permissions(AllocationOffset::new(0), 64, MemoryPermissions::NONE)
+        .unwrap();
+    drop(allocation);
+    let allocation = memory.prepare_image(&layout).unwrap();
+    let mut byte = [1];
+    allocation
+        .read(AllocationOffset::new(0), &mut byte)
+        .unwrap();
+    assert_eq!(byte, [0]);
+}
+
+#[test]
+fn flat_protection_partial_updates_preserve_and_restore_neighboring_permissions() {
+    let rw = MemoryPermissions::READ.bitor(MemoryPermissions::WRITE);
+    let (mut memory, base, _) = fixed_mapper(rw);
+    let mut allocation = memory
+        .prepare_image(&fixed(base as usize as u64, 64))
+        .unwrap();
+    allocation
+        .set_permissions(AllocationOffset::new(16), 32, MemoryPermissions::READ)
+        .unwrap();
+    allocation
+        .write(AllocationOffset::new(0), &[1; 16])
+        .unwrap();
+    allocation
+        .write(AllocationOffset::new(48), &[1; 16])
+        .unwrap();
+    assert_eq!(
+        allocation
+            .write(AllocationOffset::new(16), &[1])
+            .unwrap_err()
+            .kind(),
+        LoadErrorKind::PermissionConflict
+    );
+
+    allocation
+        .set_permissions(AllocationOffset::new(24), 8, MemoryPermissions::NONE)
+        .unwrap();
+    allocation
+        .read(AllocationOffset::new(16), &mut [0; 8])
+        .unwrap();
+    allocation
+        .read(AllocationOffset::new(32), &mut [0; 16])
+        .unwrap();
+    assert_eq!(
+        allocation
+            .read(AllocationOffset::new(24), &mut [0; 1])
+            .unwrap_err()
+            .kind(),
+        LoadErrorKind::PermissionConflict
+    );
+    allocation
+        .set_permissions(AllocationOffset::new(24), 8, rw)
+        .unwrap();
+    allocation
+        .write(AllocationOffset::new(24), &[1; 8])
+        .unwrap();
+    for offset in [16, 32] {
+        assert_eq!(
+            allocation
+                .write(AllocationOffset::new(offset), &[1])
+                .unwrap_err()
+                .kind(),
+            LoadErrorKind::PermissionConflict
+        );
+    }
+    // Replace across several old boundaries, preserving both outside ends.
+    allocation
+        .set_permissions(AllocationOffset::new(8), 48, rw)
+        .unwrap();
+    allocation
+        .write(AllocationOffset::new(0), &[7; 64])
+        .unwrap();
+    let mut bytes = [0; 64];
+    allocation
+        .read(AllocationOffset::new(0), &mut bytes)
+        .unwrap();
+    assert_eq!(bytes, [7; 64]);
+}
+
+#[test]
+fn flat_protection_overlapping_updates_match_a_bytewise_permission_model() {
+    let rw = MemoryPermissions::READ.bitor(MemoryPermissions::WRITE);
+    let (mut memory, base, _) = fixed_mapper(rw);
+    let mut allocation = memory
+        .prepare_image(&fixed(base as usize as u64, 64))
+        .unwrap();
+    let mut expected = [rw; 64];
+    for (start, len, permissions) in [
+        (16, 32, MemoryPermissions::READ),
+        (24, 8, MemoryPermissions::NONE),
+        (4, 48, MemoryPermissions::WRITE),
+        (20, 36, rw),
+        (10, 16, MemoryPermissions::NONE),
+        (0, 64, MemoryPermissions::READ),
+        (0, 64, rw),
+    ] {
+        allocation
+            .set_permissions(AllocationOffset::new(start), len, permissions)
+            .unwrap();
+        expected[start as usize..(start + len) as usize].fill(permissions);
+        for (index, permissions) in expected.iter().enumerate() {
+            let offset = AllocationOffset::new(index as u64);
+            assert_eq!(
+                allocation.read(offset, &mut [0]).is_ok(),
+                permissions.contains(MemoryPermissions::READ)
+            );
+            assert_eq!(
+                allocation.write(offset, &[1]).is_ok(),
+                permissions.contains(MemoryPermissions::WRITE)
+            );
+            assert_eq!(
+                allocation.zero(offset, 1).is_ok(),
+                permissions.contains(MemoryPermissions::WRITE)
+            );
+        }
+    }
+}
+
+#[test]
+fn preparation_grants_read_write_before_applying_read_only_or_executable_permissions() {
+    let rx = MemoryPermissions::READ.bitor(MemoryPermissions::EXECUTE);
+    let layout = ImageLayout::new(
+        Placement::Anywhere,
+        128,
+        16,
+        vec![
+            SegmentLayout::new(AllocationOffset::new(0), 64, rx),
+            SegmentLayout::new(AllocationOffset::new(64), 64, MemoryPermissions::READ),
+        ],
+    )
+    .unwrap();
+    let mut allocation = MemoryMapper::new(None).prepare_image(&layout).unwrap();
+    allocation
+        .write(AllocationOffset::new(0), &[7; 128])
+        .unwrap();
+    allocation.zero(AllocationOffset::new(0), 64).unwrap();
+    let mut bytes = [0; 128];
+    allocation
+        .read(AllocationOffset::new(0), &mut bytes)
+        .unwrap();
+    assert_eq!(&bytes[..64], &[0; 64]);
+    assert_eq!(&bytes[64..], &[7; 64]);
+    allocation
+        .set_permissions(AllocationOffset::new(0), 64, rx)
+        .unwrap();
+    allocation
+        .set_permissions(AllocationOffset::new(64), 64, MemoryPermissions::READ)
+        .unwrap();
+    for offset in [0, 64] {
+        assert_eq!(
+            allocation
+                .write(AllocationOffset::new(offset), &[1])
+                .unwrap_err()
+                .kind(),
+            LoadErrorKind::PermissionConflict
+        );
+        assert_eq!(
+            allocation
+                .zero(AllocationOffset::new(offset), 1)
+                .unwrap_err()
+                .kind(),
+            LoadErrorKind::PermissionConflict
+        );
+    }
+    allocation
+        .read(AllocationOffset::new(0), &mut bytes)
+        .unwrap();
 }

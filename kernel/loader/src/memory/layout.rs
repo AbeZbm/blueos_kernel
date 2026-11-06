@@ -36,6 +36,10 @@ impl MemoryPermissions {
         Self(self.0 | rhs.0)
     }
 
+    pub const fn without(self, rhs: Self) -> Self {
+        Self(self.0 & !rhs.0)
+    }
+
     pub(crate) const fn bits(self) -> u8 {
         self.0
     }
@@ -90,7 +94,8 @@ impl AllocationOffset {
 /// A nonempty PT_LOAD memory range, relative to the image reservation base.
 ///
 /// Permissions describe the segment's intended execution state. The backend
-/// must still provide loader reads and writes until final protection is applied.
+/// must initially provide loader reads and writes for copying and BSS zeroing;
+/// the loader applies these segment permissions after initialization.
 /// File offsets and initialized sizes remain the loader's responsibility.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SegmentLayout {

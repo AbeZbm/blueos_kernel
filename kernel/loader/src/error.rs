@@ -14,7 +14,7 @@
 
 //! Structured errors shared by positional reads and loading stages.
 
-use crate::memory::TargetAddress;
+use crate::memory::{ProtectionLevel, TargetAddress};
 use core::fmt::Debug;
 
 pub type LoadResult<T> = core::result::Result<T, LoadError>;
@@ -29,6 +29,7 @@ pub enum LoadStage {
     Map,
     Decode,
     Relocate,
+    Seal,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -129,6 +130,10 @@ pub enum ErrorContext {
         target: TargetAddress,
         raw_type: u32,
         symbol_index: u32,
+    },
+    Protection {
+        required: ProtectionLevel,
+        provided: ProtectionLevel,
     },
     HeaderField {
         field: HeaderField,

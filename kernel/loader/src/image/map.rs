@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Initialized segments and decoding of their runtime metadata.
-//! Relocation, cache synchronization and protection follow later.
+//! Initialized, segment-protected images and runtime metadata decoding.
+//! Relocation, cache synchronization and RELRO protection follow later.
 
 use super::{decode::DecodedImage, LoadRequest};
 use crate::{

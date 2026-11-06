@@ -19,20 +19,22 @@
 #![cfg_attr(test, test_runner(loader_test_runner))]
 #![cfg_attr(test, reexport_test_harness_main = "loader_test_main")]
 
-//! ELF inspection, image mapping, dynamic decoding and relative relocation.
+//! ELF inspection, mapping, relative relocation, cache sync and final protection.
 //!
 //! `ImageLoader<R: ElfReader>` reads and validates ELF headers through a
 //! source-independent reader. The `elf` and `image` stages stay crate-private
 //! while the legacy [`load_elf`] entry remains available during migration.
-//! Host backends implement [`ElfReader`], [`ImageAllocator`] and [`ImageMapping`],
+//! Host backends implement [`ElfReader`], [`ImageAllocator`], [`ImageMapping`] and [`CodeCache`],
 //! available directly from the crate root. Memory support types remain in [`memory`].
 //! New stages use [`memory::MemoryMapper`]; the root [`MemoryMapper`] keeps
 //! the legacy loading API until its callers have migrated.
 
+mod cache;
 pub mod error;
 pub mod memory;
 pub mod profile;
 pub mod reader;
+pub use cache::CodeCache;
 pub use error::{LoadError, LoadResult};
 pub use memory::{ImageAllocator, ImageMapping, MemoryPermissions, MemoryRegion};
 pub use reader::ElfReader;
