@@ -90,6 +90,7 @@ pub enum LimitKind {
     SegmentAlignment,
     DynamicEntryCount,
     RelocationCount,
+    LifecycleEntryCount,
 }
 
 #[non_exhaustive]

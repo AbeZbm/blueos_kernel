@@ -18,6 +18,7 @@ use super::{seal::SealedImage, LoadRequest};
 use crate::{
     elf::{DynamicInfo, LoadSegmentInfo, RelocationRecord},
     error::{ErrorContext, LoadErrorKind, LoadStage},
+    lifecycle::LifecyclePlan,
     memory::{AllocationOffset, ImageMapping, MemoryPermissions, TargetAddress, TargetRange},
     CodeCache, LoadError, LoadResult,
 };
@@ -48,6 +49,13 @@ impl<A: ImageMapping> RelocatedImage<A> {
             .check_protection_level(protection_level)?;
         let base = self.allocation.base();
         base.checked_add(self.allocation.len())?;
+        let lifecycle = LifecyclePlan::build(
+            &self.allocation,
+            self.request.profile(),
+            &self.segments,
+            self.image_range,
+            self.dynamic.as_ref(),
+        )?;
         // Ordinary segment permissions are already active. Publish completed
         // code writes before execution and before closing writable RELRO.
         for segment in &self.segments {
@@ -110,6 +118,7 @@ impl<A: ImageMapping> RelocatedImage<A> {
             dynamic: self.dynamic,
             relro: self.relro,
             protection_level,
+            lifecycle,
         })
     }
 

@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! A finalized image retaining its mapping, segment metadata and RELRO range.
+//! A finalized image retaining its mapping, lifecycle plan and runtime metadata.
 
 use super::LoadRequest;
 use crate::{
     elf::{DynamicInfo, LoadSegmentInfo},
+    lifecycle::LifecyclePlan,
     memory::{ImageMapping, ProtectionLevel, TargetAddress, TargetRange},
 };
 use alloc::vec::Vec;
@@ -32,9 +33,14 @@ pub(crate) struct SealedImage<A: ImageMapping> {
     pub(super) dynamic: Option<DynamicInfo>,
     pub(super) relro: Option<TargetRange>,
     pub(super) protection_level: ProtectionLevel,
+    pub(super) lifecycle: LifecyclePlan,
 }
 
 impl<A: ImageMapping> SealedImage<A> {
+    pub(crate) const fn lifecycle(&self) -> &LifecyclePlan {
+        &self.lifecycle
+    }
+
     pub(crate) const fn allocation(&self) -> &A {
         &self.allocation
     }

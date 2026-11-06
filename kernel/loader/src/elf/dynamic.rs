@@ -17,9 +17,11 @@
 
 use alloc::vec::Vec;
 use goblin::elf::dynamic::{
-    DF_1_NOW, DF_1_PIE, DF_BIND_NOW, DT_BIND_NOW, DT_FLAGS, DT_FLAGS_1, DT_GNU_HASH, DT_HASH,
-    DT_JMPREL, DT_NEEDED, DT_NULL, DT_PLTREL, DT_PLTRELSZ, DT_REL, DT_RELA, DT_RELAENT, DT_RELASZ,
-    DT_RELENT, DT_RELSZ, DT_SONAME, DT_STRSZ, DT_STRTAB, DT_SYMENT, DT_SYMTAB,
+    DF_1_NOW, DF_1_PIE, DF_BIND_NOW, DT_BIND_NOW, DT_FINI, DT_FINI_ARRAY, DT_FINI_ARRAYSZ,
+    DT_FLAGS, DT_FLAGS_1, DT_GNU_HASH, DT_HASH, DT_INIT, DT_INIT_ARRAY, DT_INIT_ARRAYSZ, DT_JMPREL,
+    DT_NEEDED, DT_NULL, DT_PLTREL, DT_PLTRELSZ, DT_PREINIT_ARRAY, DT_PREINIT_ARRAYSZ, DT_REL,
+    DT_RELA, DT_RELAENT, DT_RELASZ, DT_RELENT, DT_RELSZ, DT_SONAME, DT_STRSZ, DT_STRTAB, DT_SYMENT,
+    DT_SYMTAB,
 };
 
 use super::{
@@ -29,7 +31,7 @@ use super::{
 };
 use crate::{
     error::{ErrorContext, LoadErrorKind},
-    memory::{TargetAddress, TargetRange},
+    memory::{MemoryPermissions, TargetAddress, TargetRange},
     profile::{LoadLimits, LoadProfile},
     ElfReader, LoadError, LoadResult,
 };
@@ -40,7 +42,13 @@ struct DynamicEntry {
     value: u64,
 }
 
-/// Validated raw metadata; symbol, dependency and lifecycle decoding follow later.
+const LIFECYCLE_ARRAYS: [(u64, u64); 3] = [
+    (DT_PREINIT_ARRAY, DT_PREINIT_ARRAYSZ),
+    (DT_INIT_ARRAY, DT_INIT_ARRAYSZ),
+    (DT_FINI_ARRAY, DT_FINI_ARRAYSZ),
+];
+
+/// Validated raw metadata; symbol and dependency decoding follow later.
 /// Tag addresses remain in the ELF virtual address space, not runtime addresses.
 #[derive(Debug)]
 pub(crate) struct DynamicInfo {
@@ -77,6 +85,16 @@ impl DynamicInfo {
 
     pub(crate) fn relocation_tables(&self) -> impl Iterator<Item = &RelocationTable> {
         self.tables.iter().flatten()
+    }
+
+    /// Array geometry is validated before allocation; pointers are read after relocation.
+    pub(crate) fn lifecycle_arrays(&self) -> impl Iterator<Item = (u64, TargetRange)> + '_ {
+        LIFECYCLE_ARRAYS.into_iter().filter_map(|(tag, size_tag)| {
+            Some((
+                tag,
+                TargetRange::new(TargetAddress::new(self.value(tag)?), self.value(size_tag)?),
+            ))
+        })
     }
 }
 
@@ -152,7 +170,7 @@ pub(crate) fn read_dynamic(
     if !terminated {
         return Err(dynamic_error(DT_NULL, bytes));
     }
-    validate_metadata(&info, segments, class)?;
+    validate_metadata(&info, segments, class, limits)?;
     info.tables = relocation_tables(&info, segments, class)?;
     let mut total = 0u64;
     for table in info.relocation_tables() {
@@ -169,6 +187,7 @@ fn validate_metadata(
     info: &DynamicInfo,
     segments: &[LoadSegmentInfo],
     class: ElfClass,
+    limits: &LoadLimits,
 ) -> LoadResult<()> {
     let strtab = info.value(DT_STRTAB);
     let strsz = info.value(DT_STRSZ);
@@ -208,6 +227,44 @@ fn validate_metadata(
                 .map_err(|_| dynamic_error(tag, address))?;
         }
     }
+    let word_size = match class {
+        ElfClass::Elf32 => 4,
+        ElfClass::Elf64 => 8,
+    };
+    let mut total = [DT_INIT, DT_FINI]
+        .into_iter()
+        .filter(|tag| info.value(*tag).is_some_and(|value| value != 0))
+        .count() as u64;
+    for (tag, size_tag) in LIFECYCLE_ARRAYS {
+        match (info.value(tag), info.value(size_tag)) {
+            (None, None) => continue,
+            (Some(address), Some(len)) => {
+                if !len.is_multiple_of(word_size) {
+                    return Err(dynamic_error(size_tag, len));
+                }
+                if len != 0 {
+                    if !address.is_multiple_of(word_size) {
+                        return Err(dynamic_error(tag, address));
+                    }
+                    // Zero-filled array slots in BSS are valid; file backing is
+                    // unnecessary, but the complete array must remain readable.
+                    if !segments.iter().any(|segment| {
+                        segment.permissions().contains(MemoryPermissions::READ)
+                            && TargetRange::new(segment.vaddr(), segment.memory_size())
+                                .contains_span(TargetAddress::new(address), len)
+                    }) {
+                        return Err(dynamic_error(tag, address));
+                    }
+                }
+                total = total
+                    .checked_add(len / word_size)
+                    .ok_or_else(|| dynamic_error(size_tag, len))?;
+            }
+            (Some(address), None) => return Err(dynamic_error(tag, address)),
+            (None, Some(len)) => return Err(dynamic_error(size_tag, len)),
+        }
+    }
+    limits.check_lifecycle_entry_count(total)?;
     Ok(())
 }
 

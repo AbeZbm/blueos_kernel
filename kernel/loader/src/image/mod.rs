@@ -12,13 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Single-image validation, layout, mapping, relocation and memory finalization.
+//! Single-image validation, layout, mapping, relocation and runtime finalization.
 //! Follow admit, inspect, plan, allocate, map, decode, relocate, then seal. Planning
 //! scans dynamic tags once from the stable reader; decode reads records from the
 //! mapped image. Map applies segment/hole permissions after all initialization;
-//! relocation validates every write before applying any. Seal synchronizes code
-//! and removes RELRO writes.
+//! relocation validates every write before applying any. Seal prepares the image's
+//! lifecycle plan, synchronizes code and removes RELRO writes.
 //! ELF table parsing and record formats are implemented in `crate::elf`.
+//! Shared relocation and lifecycle algorithms live in `crate::relocation` and
+//! `crate::lifecycle`; this module owns their placement in the loading stages.
 
 mod admit;
 mod allocate;

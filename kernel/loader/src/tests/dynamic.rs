@@ -15,6 +15,8 @@
 //! Dynamic admission, bounded table scanning and relocation wire decoding.
 
 // Relocation tests reuse the same dynamic ELF fixture and observed mapping.
+#[path = "lifecycle.rs"]
+mod lifecycle;
 #[path = "relocation.rs"]
 mod relocation;
 #[path = "seal.rs"]
