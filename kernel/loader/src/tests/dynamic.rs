@@ -603,6 +603,13 @@ fn shared_objects_reject_exec_pie_and_invalid_nonzero_entries() {
                     LoadErrorKind::UnsupportedByProfile
                 }
             );
+            if case == 1 {
+                assert!(matches!(
+                    error.context(),
+                    ErrorContext::DynamicTag { tag: DT_FLAGS_1, value }
+                        if *value == DF_1_PIE
+                ));
+            }
             assert_eq!(state.prepares.get(), 0);
         }
     }
@@ -690,13 +697,17 @@ fn dynamic_rejects_native_tls_and_interpreters_even_with_extended_header_policy(
         let profile = base.with_additional_program_headers(&[PT_TLS, PT_INTERP]);
         let mut fixture = Fixture::new(profile, &[(DT_NULL, 0)]);
         fixture.ph(2, 0, kind as u64);
+        let state = Rc::new(State::default());
         let error = failure(plan(
             &fixture,
             LoadPurpose::Executable,
             LoadLimits::DEFAULT,
-            Rc::new(State::default()),
+            state.clone(),
         ));
         assert_eq!(error.kind(), LoadErrorKind::UnsupportedByProfile);
+        assert_eq!(error.stage(), Some(LoadStage::Plan));
+        assert_eq!(state.prepares.get(), 0);
+        assert_eq!(state.writes.get(), 0);
     }
 }
 
@@ -1021,16 +1032,28 @@ fn plt_relocations_require_eager_binding_and_derive_their_entry_size() {
                 dynamic.push((DT_NULL, 0));
                 let mut fixture = Fixture::new(profile, &dynamic);
                 fixture.relocation(RELVA, kind, TARGET, 0, 2, -1);
+                let state = Rc::new(State::default());
                 let result = load(
                     &fixture,
                     LoadPurpose::Executable,
                     LoadLimits::DEFAULT,
-                    Rc::new(State::default()),
+                    state.clone(),
                 );
                 if binding.is_some() {
                     assert_eq!(result.unwrap().relocations().len(), 1);
                 } else {
-                    assert_eq!(failure(result).kind(), LoadErrorKind::UnsupportedByProfile);
+                    let error = failure(result);
+                    assert_eq!(error.kind(), LoadErrorKind::UnsupportedByProfile);
+                    assert_eq!(error.stage(), Some(LoadStage::Plan));
+                    assert!(matches!(
+                        error.context(),
+                        ErrorContext::DynamicTag {
+                            tag: DT_JMPREL,
+                            value: RELVA
+                        }
+                    ));
+                    assert_eq!(state.prepares.get(), 0);
+                    assert_eq!(state.writes.get(), 0);
                 }
             }
         }

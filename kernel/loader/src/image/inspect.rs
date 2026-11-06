@@ -16,10 +16,7 @@
 
 use super::{plan::PlannedImage, LoadRequest};
 use crate::{
-    elf::{
-        read_dynamic, ElfClass, ElfHeaderInfo, ElfType, FileRange, LoadSegmentInfo,
-        ProgramHeaderInfo,
-    },
+    elf::{read_dynamic, ElfClass, ElfHeaderInfo, FileRange, LoadSegmentInfo, ProgramHeaderInfo},
     error::{ErrorContext, HeaderField, LoadErrorKind, LoadStage, ProgramHeaderField},
     memory::{MemoryPermissions, TargetAddress, TargetRange},
     profile::LoadPurpose,
@@ -54,17 +51,9 @@ impl<R: ElfReader> InspectedImage<R> {
     }
 
     fn plan_inner(self) -> LoadResult<PlannedImage<R>> {
-        if self.request.purpose() == LoadPurpose::SharedObject
-            && self.header.r#type() != ElfType::Dyn
-        {
-            return Err(LoadError::new(
-                LoadErrorKind::UnsupportedByProfile,
-                ErrorContext::HeaderField {
-                    field: HeaderField::Type,
-                    value: u64::from(self.header.r#type()),
-                },
-            ));
-        }
+        self.request
+            .profile()
+            .check_image_type(self.request.purpose(), self.header.r#type())?;
         for (index, header) in self.program_headers.iter().enumerate() {
             self.request
                 .profile()
@@ -234,18 +223,20 @@ impl<R: ElfReader> InspectedImage<R> {
             ));
         }
         let dynamic = dynamic_header
-            .map(|header| read_dynamic(&self.reader, header, &segments, &self.request))
+            .map(|header| {
+                read_dynamic(
+                    &self.reader,
+                    header,
+                    &segments,
+                    self.request.profile(),
+                    self.request.limits(),
+                )
+            })
             .transpose()?;
-        if self.request.purpose() == LoadPurpose::SharedObject
-            && dynamic.as_ref().is_some_and(|info| info.is_pie())
-        {
-            return Err(LoadError::new(
-                LoadErrorKind::UnsupportedByProfile,
-                ErrorContext::HeaderField {
-                    field: HeaderField::Type,
-                    value: u64::from(self.header.r#type()),
-                },
-            ));
+        if let Some(dynamic) = &dynamic {
+            self.request
+                .profile()
+                .check_dynamic_image(self.request.purpose(), dynamic)?;
         }
         // Layout validation is complete; the raw program-header table is no
         // longer needed and is dropped rather than retained by later stages.

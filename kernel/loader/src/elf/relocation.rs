@@ -15,10 +15,9 @@
 //! ELF REL/RELA table descriptors and record decoding.
 //! Architecture-specific relocation types remain raw; no memory is modified.
 
-use super::{read_u32, read_u64};
+use super::{read_u32, read_u64, ElfClass, ElfData};
 use crate::{
     memory::{TargetAddress, TargetRange},
-    profile::{ElfClass, ElfData},
     LoadResult,
 };
 

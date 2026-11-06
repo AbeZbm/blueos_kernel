@@ -25,13 +25,12 @@ use goblin::elf::dynamic::{
 use super::{
     read_u32, read_u64,
     relocation::{RelocationFormat, RelocationTable},
-    FileRange, LoadSegmentInfo, ProgramHeaderInfo,
+    ElfClass, FileRange, LoadSegmentInfo, ProgramHeaderInfo,
 };
 use crate::{
     error::{ErrorContext, LoadErrorKind},
-    image::LoadRequest,
     memory::{TargetAddress, TargetRange},
-    profile::ElfClass,
+    profile::{LoadLimits, LoadProfile},
     ElfReader, LoadError, LoadResult,
 };
 
@@ -69,6 +68,13 @@ impl DynamicInfo {
         self.value(DT_FLAGS_1).unwrap_or(0) & DF_1_PIE != 0
     }
 
+    /// Whether any dynamic entry explicitly requests immediate binding.
+    pub(crate) fn bind_now(&self) -> bool {
+        self.value(DT_BIND_NOW).is_some()
+            || self.value(DT_FLAGS).unwrap_or(0) & DF_BIND_NOW != 0
+            || self.value(DT_FLAGS_1).unwrap_or(0) & DF_1_NOW != 0
+    }
+
     pub(crate) fn relocation_tables(&self) -> impl Iterator<Item = &RelocationTable> {
         self.tables.iter().flatten()
     }
@@ -78,9 +84,10 @@ pub(crate) fn read_dynamic(
     reader: &impl ElfReader,
     header: &ProgramHeaderInfo,
     segments: &[LoadSegmentInfo],
-    request: &LoadRequest,
+    profile: &LoadProfile,
+    limits: &LoadLimits,
 ) -> LoadResult<DynamicInfo> {
-    let class = request.profile().class();
+    let class = profile.class();
     let entry_size = match class {
         ElfClass::Elf32 => 8,
         ElfClass::Elf64 => 16,
@@ -109,7 +116,7 @@ pub(crate) fn read_dynamic(
     let mut terminated = false;
     for index in 0..bytes / entry_size {
         // Check before reading or reserving: padding must not drive allocation.
-        request.limits().check_dynamic_entry_count(index + 1)?;
+        limits.check_dynamic_entry_count(index + 1)?;
         let offset = index
             .checked_mul(entry_size)
             .and_then(|n| file.offset().checked_add(n))
@@ -117,19 +124,19 @@ pub(crate) fn read_dynamic(
         reader.read_exact_at(offset, &mut raw[..entry_size as usize])?;
         let (tag, value) = match class {
             ElfClass::Elf32 => (
-                u64::from(read_u32(&raw, 0, request.profile().endian())?),
-                u64::from(read_u32(&raw, 4, request.profile().endian())?),
+                u64::from(read_u32(&raw, 0, profile.endian())?),
+                u64::from(read_u32(&raw, 4, profile.endian())?),
             ),
             ElfClass::Elf64 => (
-                read_u64(&raw, 0, request.profile().endian())?,
-                read_u64(&raw, 8, request.profile().endian())?,
+                read_u64(&raw, 0, profile.endian())?,
+                read_u64(&raw, 8, profile.endian())?,
             ),
         };
         if tag == DT_NULL {
             terminated = true;
             break;
         }
-        let bit = request.profile().check_dynamic_tag(tag, value)?;
+        let bit = profile.check_dynamic_tag(tag, value)?;
         if tag != DT_NEEDED && seen & bit != 0 {
             return Err(dynamic_error(tag, value));
         }
@@ -153,7 +160,7 @@ pub(crate) fn read_dynamic(
         total = total
             .checked_add(len / table.format.entry_size(class))
             .ok_or_else(|| dynamic_range_error(table.range.start(), len))?;
-        request.limits().check_relocation_count(total)?;
+        limits.check_relocation_count(total)?;
     }
     Ok(info)
 }
@@ -263,18 +270,6 @@ fn relocation_tables(
     ) {
         (None, None, None) => None,
         (Some(address), Some(len), Some(format)) if format == DT_REL || format == DT_RELA => {
-            let bind_now = info.value(DT_BIND_NOW).is_some()
-                || info.value(DT_FLAGS).unwrap_or(0) & DF_BIND_NOW != 0
-                || info.value(DT_FLAGS_1).unwrap_or(0) & DF_1_NOW != 0;
-            if !bind_now {
-                return Err(LoadError::new(
-                    LoadErrorKind::UnsupportedByProfile,
-                    ErrorContext::DynamicTag {
-                        tag: DT_JMPREL,
-                        value: address,
-                    },
-                ));
-            }
             let format = if format == DT_REL {
                 RelocationFormat::Rel
             } else {

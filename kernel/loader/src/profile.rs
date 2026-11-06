@@ -15,7 +15,7 @@
 //! Caller-supplied ELF architecture, ABI and admission policies, and resource limits.
 
 use crate::{
-    elf::{ElfHeaderInfo, ElfType},
+    elf::{DynamicInfo, ElfHeaderInfo, ElfType},
     error::{ErrorContext, HeaderField, LimitKind, LoadErrorKind, ProgramHeaderField},
     memory::MemoryPermissions,
     LoadError, LoadResult,
@@ -282,6 +282,7 @@ pub struct LoadProfile {
 }
 
 impl LoadProfile {
+    /// Admit the OS ABI without treating a recognized but unsupported ABI as malformed ELF.
     pub(crate) fn check_ident_abi(&self, osabi: u8, abi_version: u8) -> LoadResult<()> {
         if !matches!(osabi, ELFOSABI_NONE | ELFOSABI_GNU) {
             return Err(unsupported_header(HeaderField::OsAbi, u64::from(osabi)));
@@ -295,6 +296,7 @@ impl LoadProfile {
         Ok(())
     }
 
+    /// Match structurally decoded header facts against the implemented profile.
     pub(crate) fn check_header(&self, header: &ElfHeaderInfo) -> LoadResult<()> {
         if !matches!(header.r#type(), ElfType::Dyn | ElfType::Exec) {
             return Err(unsupported_header(
@@ -335,6 +337,39 @@ impl LoadProfile {
             return Err(unsupported_header(
                 HeaderField::ProgramHeaderCount,
                 u64::from(header.program_header_count()),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Check whether this image type can serve the requested loading purpose.
+    pub(crate) fn check_image_type(
+        &self,
+        purpose: LoadPurpose,
+        elf_type: ElfType,
+    ) -> LoadResult<()> {
+        if purpose == LoadPurpose::SharedObject && elf_type != ElfType::Dyn {
+            return Err(unsupported_header(HeaderField::Type, u64::from(elf_type)));
+        }
+        Ok(())
+    }
+
+    /// Reject runtime semantics not provided by the selected loading profile.
+    pub(crate) fn check_dynamic_image(
+        &self,
+        purpose: LoadPurpose,
+        dynamic: &DynamicInfo,
+    ) -> LoadResult<()> {
+        if let Some(address) = dynamic.value(DT_JMPREL) {
+            self.check_plt_binding(address, dynamic.bind_now())?;
+        }
+        if purpose == LoadPurpose::SharedObject && dynamic.is_pie() {
+            return Err(LoadError::new(
+                LoadErrorKind::UnsupportedByProfile,
+                ErrorContext::DynamicTag {
+                    tag: DT_FLAGS_1,
+                    value: dynamic.value(DT_FLAGS_1).unwrap_or(0),
+                },
             ));
         }
         Ok(())
@@ -555,6 +590,20 @@ impl LoadProfile {
         }
     }
 
+    /// Current loading profiles require immediate binding for PLT relocations.
+    fn check_plt_binding(&self, address: u64, bind_now: bool) -> LoadResult<()> {
+        if bind_now {
+            return Ok(());
+        }
+        Err(LoadError::new(
+            LoadErrorKind::UnsupportedByProfile,
+            ErrorContext::DynamicTag {
+                tag: DT_JMPREL,
+                value: address,
+            },
+        ))
+    }
+
     pub(crate) fn check_stack_flags(&self, index: u16, flags: u32) -> LoadResult<()> {
         if self.program_headers.accepts_stack_flags(flags) {
             return Ok(());
@@ -723,16 +772,16 @@ fn check_limit(resource: LimitKind, actual: u64, maximum: u64) -> LoadResult<()>
     ))
 }
 
+/// Whether loading requires an application entry or a loadable shared object.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LoadPurpose {
+    Executable,
+    SharedObject,
+}
+
 fn unsupported_header(field: HeaderField, value: u64) -> LoadError {
     LoadError::new(
         LoadErrorKind::UnsupportedByProfile,
         ErrorContext::HeaderField { field, value },
     )
-}
-
-/// Whether the image supplies the application entry or is a dependency.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LoadPurpose {
-    Executable,
-    SharedObject,
 }
