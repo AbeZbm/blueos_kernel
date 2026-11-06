@@ -322,7 +322,7 @@ fn mapping_copies_bounded_chunks_and_zeros_only_bss() {
         assert_eq!(state.borrow().factory_drops, 1);
         assert_eq!(state.borrow().live, 1);
         let mapped = allocated.map().unwrap();
-        assert_eq!(mapped.entry().get(), 0x8004);
+        assert_eq!(mapped.entry().unwrap().get(), 0x8004);
         assert_eq!(mapped.load_bias(), 0x7000);
         assert_eq!(
             reads.borrow().payload,
@@ -478,7 +478,10 @@ fn mapping_supports_fixed_placement_and_downward_relocation() {
                 .map()
                 .unwrap();
             let fixed = kind == ET_EXEC;
-            assert_eq!(mapped.entry().get(), if fixed { 0x1004 } else { 0x104 });
+            assert_eq!(
+                mapped.entry().unwrap().get(),
+                if fixed { 0x1004 } else { 0x104 }
+            );
             assert_eq!(mapped.load_bias(), if fixed { 0 } else { -0xf00 });
             assert_eq!(
                 state.borrow().layout.as_ref().unwrap().placement(),
@@ -530,7 +533,7 @@ fn allocation_checks_target_width_without_host_pointer_restrictions() {
             let result = planned(&bytes, profile).allocate(memory);
             if base == 0x1_0000_0000 && profile.class() == ElfClass::Elf64 {
                 let mapped = result.unwrap().map().unwrap();
-                assert_eq!(mapped.entry().get(), base + 4);
+                assert_eq!(mapped.entry().unwrap().get(), base + 4);
             } else {
                 let error = failure(result);
                 assert_eq!(error.stage(), Some(LoadStage::Allocate));
@@ -681,7 +684,7 @@ fn mapping_runs_with_flat_owned_and_fixed_backends() {
     assert_eq!(&contents[..17], &bytes[PAYLOAD..]);
     assert_eq!(&contents[17..], &[0; 31]);
     let base = mapped.allocation().base();
-    assert_eq!(mapped.entry(), base.checked_add(4).unwrap());
+    assert_eq!(mapped.entry().unwrap(), base.checked_add(4).unwrap());
     drop(mapped);
 
     let storage = Box::leak(Box::new(
@@ -710,7 +713,7 @@ fn mapping_runs_with_flat_owned_and_fixed_backends() {
         .unwrap()
         .map()
         .unwrap();
-    assert_eq!(mapped.entry().get(), base as u64 + 4);
+    assert_eq!(mapped.entry().unwrap().get(), base as u64 + 4);
     assert_eq!(mapped.load_bias(), 0);
     mapped
         .read(AllocationOffset::new(0), &mut contents)

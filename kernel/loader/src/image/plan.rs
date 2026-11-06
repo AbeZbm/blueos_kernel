@@ -16,7 +16,7 @@
 
 use super::{allocate::AllocatedImage, LoadRequest};
 use crate::{
-    elf::{ElfClass, ElfHeaderInfo, ElfType, LoadSegmentInfo},
+    elf::{DynamicInfo, ElfClass, ElfHeaderInfo, ElfType, LoadSegmentInfo},
     error::{ErrorContext, HeaderField, LoadErrorKind, LoadStage},
     memory::{
         AllocationOffset, ImageAllocator, ImageLayout, ImageMapping, Placement, SegmentLayout,
@@ -33,6 +33,7 @@ pub(crate) struct PlannedImage<R: ElfReader> {
     pub(super) request: LoadRequest,
     pub(super) header: ElfHeaderInfo,
     pub(super) segments: Vec<LoadSegmentInfo>,
+    pub(super) dynamic: Option<DynamicInfo>,
     /// Validated ELF virtual range; write protection is applied after relocation.
     pub(super) relro: Option<TargetRange>,
     pub(super) image_range: TargetRange,
@@ -114,6 +115,7 @@ impl<R: ElfReader> PlannedImage<R> {
             request: self.request,
             header: self.header,
             segments: self.segments,
+            dynamic: self.dynamic,
             relro: self.relro,
             image_range: self.image_range,
         })

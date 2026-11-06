@@ -21,6 +21,13 @@ use crate::{
     LoadError, LoadResult,
 };
 use goblin::elf::{
+    dynamic::{
+        DF_1_NOW, DF_1_PIE, DF_BIND_NOW, DT_BIND_NOW, DT_DEBUG, DT_FINI, DT_FINI_ARRAY,
+        DT_FINI_ARRAYSZ, DT_FLAGS, DT_FLAGS_1, DT_GNU_HASH, DT_HASH, DT_INIT, DT_INIT_ARRAY,
+        DT_INIT_ARRAYSZ, DT_JMPREL, DT_NEEDED, DT_PLTGOT, DT_PLTREL, DT_PLTRELSZ, DT_PREINIT_ARRAY,
+        DT_PREINIT_ARRAYSZ, DT_REL, DT_RELA, DT_RELACOUNT, DT_RELAENT, DT_RELASZ, DT_RELCOUNT,
+        DT_RELENT, DT_RELSZ, DT_SONAME, DT_STRSZ, DT_STRTAB, DT_SYMENT, DT_SYMTAB,
+    },
     header::{ELFOSABI_GNU, ELFOSABI_NONE},
     program_header::{
         PF_R, PF_W, PF_X, PT_DYNAMIC, PT_GNU_EH_FRAME, PT_GNU_RELRO, PT_GNU_STACK, PT_INTERP,
@@ -83,6 +90,42 @@ impl HeaderFlagsPolicy {
         (flags & self.mask) == self.required && (flags & self.forbidden) == 0
     }
 }
+
+/// Dynamic tags understood by this loader. Indices also identify singleton tags.
+pub(crate) const DYNAMIC_TAGS: [u64; 32] = [
+    DT_NEEDED,
+    DT_PLTRELSZ,
+    DT_PLTGOT,
+    DT_HASH,
+    DT_STRTAB,
+    DT_SYMTAB,
+    DT_RELA,
+    DT_RELASZ,
+    DT_RELAENT,
+    DT_STRSZ,
+    DT_SYMENT,
+    DT_INIT,
+    DT_FINI,
+    DT_SONAME,
+    DT_REL,
+    DT_RELSZ,
+    DT_RELENT,
+    DT_PLTREL,
+    DT_DEBUG,
+    DT_JMPREL,
+    DT_BIND_NOW,
+    DT_INIT_ARRAY,
+    DT_FINI_ARRAY,
+    DT_INIT_ARRAYSZ,
+    DT_FINI_ARRAYSZ,
+    DT_PREINIT_ARRAY,
+    DT_PREINIT_ARRAYSZ,
+    DT_FLAGS,
+    DT_FLAGS_1,
+    DT_GNU_HASH,
+    DT_RELACOUNT,
+    DT_RELCOUNT,
+];
 
 /// Caller-defined program-header admission policy.
 ///
@@ -478,6 +521,40 @@ impl LoadProfile {
         ))
     }
 
+    /// Header admission alone cannot enable unimplemented runtime semantics.
+    pub(crate) fn check_runtime_program_header(&self, index: u16, kind: u32) -> LoadResult<()> {
+        let field = match kind {
+            PT_INTERP => ProgramHeaderField::UnsupportedInterpreter,
+            PT_TLS => ProgramHeaderField::UnsupportedTls,
+            _ => return Ok(()),
+        };
+        Err(LoadError::new(
+            LoadErrorKind::UnsupportedByProfile,
+            ErrorContext::ProgramHeader {
+                index,
+                field,
+                value: u64::from(kind),
+            },
+        ))
+    }
+
+    /// Accept implemented dynamic semantics and return its singleton bit.
+    pub(crate) fn check_dynamic_tag(&self, tag: u64, value: u64) -> LoadResult<u64> {
+        let index = DYNAMIC_TAGS.iter().position(|candidate| *candidate == tag);
+        let flags_supported = match tag {
+            DT_FLAGS => value & !DF_BIND_NOW == 0,
+            DT_FLAGS_1 => value & !(DF_1_NOW | DF_1_PIE) == 0,
+            _ => true,
+        };
+        match index {
+            Some(index) if flags_supported => Ok(1u64 << index),
+            _ => Err(LoadError::new(
+                LoadErrorKind::UnsupportedByProfile,
+                ErrorContext::DynamicTag { tag, value },
+            )),
+        }
+    }
+
     pub(crate) fn check_stack_flags(&self, index: u16, flags: u32) -> LoadResult<()> {
         if self.program_headers.accepts_stack_flags(flags) {
             return Ok(());
@@ -501,6 +578,10 @@ pub struct LoadLimits {
     max_load_segments: u16,
     max_image_span: u64,
     max_segment_alignment: u64,
+    // Includes the terminating DT_NULL; storage grows only for preceding entries.
+    max_dynamic_entries: u64,
+    // Counts unique records after normalizing overlapping main/PLT tables.
+    max_relocations: u64,
 }
 
 impl LoadLimits {
@@ -510,6 +591,8 @@ impl LoadLimits {
         32,
         64 * 1024 * 1024,
         1024 * 1024 * 1024,
+        1024,
+        64 * 1024,
     );
 
     #[inline]
@@ -519,6 +602,8 @@ impl LoadLimits {
         max_load_segments: u16,
         max_image_span: u64,
         max_segment_alignment: u64,
+        max_dynamic_entries: u64,
+        max_relocations: u64,
     ) -> Self {
         Self {
             max_file_len,
@@ -526,6 +611,8 @@ impl LoadLimits {
             max_load_segments,
             max_image_span,
             max_segment_alignment,
+            max_dynamic_entries,
+            max_relocations,
         }
     }
 
@@ -557,6 +644,30 @@ impl LoadLimits {
     pub const fn with_max_segment_alignment(mut self, maximum: u64) -> Self {
         self.max_segment_alignment = maximum;
         self
+    }
+
+    #[inline]
+    pub const fn with_max_dynamic_entries(mut self, maximum: u64) -> Self {
+        self.max_dynamic_entries = maximum;
+        self
+    }
+
+    #[inline]
+    pub const fn with_max_relocations(mut self, maximum: u64) -> Self {
+        self.max_relocations = maximum;
+        self
+    }
+
+    pub fn check_dynamic_entry_count(&self, actual: u64) -> LoadResult<()> {
+        check_limit(
+            LimitKind::DynamicEntryCount,
+            actual,
+            self.max_dynamic_entries,
+        )
+    }
+
+    pub fn check_relocation_count(&self, actual: u64) -> LoadResult<()> {
+        check_limit(LimitKind::RelocationCount, actual, self.max_relocations)
     }
 
     pub fn check_file_len(&self, actual: u64) -> LoadResult<()> {
@@ -617,4 +728,11 @@ fn unsupported_header(field: HeaderField, value: u64) -> LoadError {
         LoadErrorKind::UnsupportedByProfile,
         ErrorContext::HeaderField { field, value },
     )
+}
+
+/// Whether the image supplies the application entry or is a dependency.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LoadPurpose {
+    Executable,
+    SharedObject,
 }

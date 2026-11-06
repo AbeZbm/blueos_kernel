@@ -16,14 +16,18 @@
 
 use super::{plan::PlannedImage, LoadRequest};
 use crate::{
-    elf::{ElfClass, ElfHeaderInfo, FileRange, LoadSegmentInfo, ProgramHeaderInfo},
+    elf::{
+        read_dynamic, ElfClass, ElfHeaderInfo, ElfType, FileRange, LoadSegmentInfo,
+        ProgramHeaderInfo,
+    },
     error::{ErrorContext, HeaderField, LoadErrorKind, LoadStage, ProgramHeaderField},
     memory::{MemoryPermissions, TargetAddress, TargetRange},
+    profile::LoadPurpose,
     reader::ElfReader,
     LoadError, LoadResult,
 };
 use alloc::vec::Vec;
-use goblin::elf::program_header::{PT_GNU_RELRO, PT_LOAD};
+use goblin::elf::program_header::{PT_DYNAMIC, PT_GNU_RELRO, PT_LOAD};
 
 /// Checked file metadata; image layout and backing have not been prepared yet.
 #[must_use = "retain the inspected image for the next loading stage"]
@@ -43,13 +47,29 @@ impl<R: ElfReader> InspectedImage<R> {
         &self.program_headers
     }
 
-    /// Plan the logical layout without reading segment contents or reserving backing.
+    /// Plan the layout and admit dynamic metadata without reserving image backing.
     pub fn plan(self) -> LoadResult<PlannedImage<R>> {
         self.plan_inner()
             .map_err(|error| error.at_stage(LoadStage::Plan))
     }
 
     fn plan_inner(self) -> LoadResult<PlannedImage<R>> {
+        if self.request.purpose() == LoadPurpose::SharedObject
+            && self.header.r#type() != ElfType::Dyn
+        {
+            return Err(LoadError::new(
+                LoadErrorKind::UnsupportedByProfile,
+                ErrorContext::HeaderField {
+                    field: HeaderField::Type,
+                    value: u64::from(self.header.r#type()),
+                },
+            ));
+        }
+        for (index, header) in self.program_headers.iter().enumerate() {
+            self.request
+                .profile()
+                .check_runtime_program_header(index as u16, header.r#type())?;
+        }
         // Empty PT_LOAD entries were counted during inspection, but contribute
         // no mapping, permissions or alignment to the executable layout.
         let count = self
@@ -136,9 +156,8 @@ impl<R: ElfReader> InspectedImage<R> {
         self.request.limits().check_image_span(image_range.len())?;
 
         let entry = TargetAddress::new(self.header.entry());
-        // These images are executable roots: zero denotes no entry point.
-        // Shared-object entry rules are introduced with dynamic metadata.
-        if entry.get() == 0 {
+        // Executable roots require an entry; a DSO can legitimately omit it.
+        if entry.get() == 0 && self.request.purpose() == LoadPurpose::Executable {
             return Err(LoadError::new(
                 LoadErrorKind::BadElf,
                 ErrorContext::HeaderField {
@@ -147,36 +166,38 @@ impl<R: ElfReader> InspectedImage<R> {
                 },
             ));
         }
-        let entry_mode = self.request.profile().entry_mode();
-        let instruction_alignment = u64::from(entry_mode.instruction_alignment());
-        let instruction_size = u64::from(entry_mode.minimum_instruction_size());
-        if entry
-            .get()
-            .checked_rem(instruction_alignment)
-            .is_some_and(|remainder| remainder != 0)
-        {
-            return Err(LoadError::new(
-                LoadErrorKind::InvalidAlignment,
-                ErrorContext::TargetRange {
-                    start: entry,
-                    len: instruction_size,
-                    align: instruction_alignment,
-                },
-            ));
-        }
-        if !segments.iter().any(|segment| {
-            segment.permissions().contains(MemoryPermissions::EXECUTE)
-                && TargetRange::new(segment.vaddr(), segment.memory_size())
-                    .contains_span(entry, instruction_size)
-        }) {
-            return Err(LoadError::new(
-                LoadErrorKind::PermissionConflict,
-                ErrorContext::TargetRange {
-                    start: entry,
-                    len: instruction_size,
-                    align: instruction_alignment,
-                },
-            ));
+        if entry.get() != 0 {
+            let entry_mode = self.request.profile().entry_mode();
+            let instruction_alignment = u64::from(entry_mode.instruction_alignment());
+            let instruction_size = u64::from(entry_mode.minimum_instruction_size());
+            if entry
+                .get()
+                .checked_rem(instruction_alignment)
+                .is_some_and(|remainder| remainder != 0)
+            {
+                return Err(LoadError::new(
+                    LoadErrorKind::InvalidAlignment,
+                    ErrorContext::TargetRange {
+                        start: entry,
+                        len: instruction_size,
+                        align: instruction_alignment,
+                    },
+                ));
+            }
+            if !segments.iter().any(|segment| {
+                segment.permissions().contains(MemoryPermissions::EXECUTE)
+                    && TargetRange::new(segment.vaddr(), segment.memory_size())
+                        .contains_span(entry, instruction_size)
+            }) {
+                return Err(LoadError::new(
+                    LoadErrorKind::PermissionConflict,
+                    ErrorContext::TargetRange {
+                        start: entry,
+                        len: instruction_size,
+                        align: instruction_alignment,
+                    },
+                ));
+            }
         }
 
         let relro = self
@@ -200,6 +221,32 @@ impl<R: ElfReader> InspectedImage<R> {
                 ));
             }
         }
+        let dynamic_header = self
+            .program_headers
+            .iter()
+            .find(|header| header.r#type() == PT_DYNAMIC);
+        if self.request.purpose() == LoadPurpose::SharedObject && dynamic_header.is_none() {
+            return Err(LoadError::program_header(
+                0,
+                ProgramHeaderField::Type,
+                u64::from(PT_DYNAMIC),
+                LoadErrorKind::BadElf,
+            ));
+        }
+        let dynamic = dynamic_header
+            .map(|header| read_dynamic(&self.reader, header, &segments, &self.request))
+            .transpose()?;
+        if self.request.purpose() == LoadPurpose::SharedObject
+            && dynamic.as_ref().is_some_and(|info| info.is_pie())
+        {
+            return Err(LoadError::new(
+                LoadErrorKind::UnsupportedByProfile,
+                ErrorContext::HeaderField {
+                    field: HeaderField::Type,
+                    value: u64::from(self.header.r#type()),
+                },
+            ));
+        }
         // Layout validation is complete; the raw program-header table is no
         // longer needed and is dropped rather than retained by later stages.
         Ok(PlannedImage {
@@ -207,6 +254,7 @@ impl<R: ElfReader> InspectedImage<R> {
             request: self.request,
             header: self.header,
             segments,
+            dynamic,
             relro,
             image_range,
             max_alignment,

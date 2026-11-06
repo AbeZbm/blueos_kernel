@@ -12,17 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Single-image ELF inspection, layout planning and backend-mediated mapping.
-//! Follow admit, inspect, plan, allocate, then map. A mapped image still needs
-//! relocation, cache synchronization and final protection before execution.
+//! Single-image validation, layout, mapping and dynamic metadata decoding.
+//! Follow admit, inspect, plan, allocate, map, then decode. Planning scans dynamic
+//! tags once from the stable reader; decode reads relocation records from the
+//! mapped image. Relocation, cache synchronization and protection follow later.
+//! ELF table parsing and record formats are implemented in `crate::elf`.
 
 mod admit;
 mod allocate;
+mod decode;
 mod image_loader;
 mod inspect;
 mod map;
 mod plan;
 
+pub(crate) use decode::DecodedImage;
 pub(crate) use image_loader::{ImageLoader, LoadRequest};
 pub(crate) use map::MappedImage;
 pub(crate) use plan::PlannedImage;

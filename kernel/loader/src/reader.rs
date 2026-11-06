@@ -18,7 +18,7 @@ use crate::LoadResult;
 
 /// Read ELF contents independently of how they are stored or opened.
 ///
-/// The image loader uses this contract to read headers at exact offsets.
+/// The image loader reads headers, dynamic metadata and segment contents at exact offsets.
 /// Implementations can read an opened file, an in-memory slice or flash.
 /// The length and contents must remain stable throughout one load attempt.
 pub trait ElfReader {

@@ -15,6 +15,7 @@
 //! Reader, ABI-policy and staged ELF-inspection tests.
 
 mod address;
+mod dynamic;
 mod fixture;
 mod image;
 mod mapping;

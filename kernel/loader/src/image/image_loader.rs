@@ -18,7 +18,7 @@ use crate::{
     elf::{ElfClass, ElfHeaderInfo, ELF32_HEADER_SIZE, ELF64_HEADER_SIZE, ELF_IDENT_SIZE},
     error::{ErrorContext, HeaderField, LoadErrorKind, LoadStage},
     image::admit::AdmittedImage,
-    profile::{LoadLimits, LoadProfile},
+    profile::{LoadLimits, LoadProfile, LoadPurpose},
     reader::ElfReader,
     LoadError, LoadResult,
 };
@@ -28,11 +28,25 @@ use crate::{
 pub(crate) struct LoadRequest {
     profile: LoadProfile,
     limits: LoadLimits,
+    purpose: LoadPurpose,
 }
 
 impl LoadRequest {
     pub const fn new(profile: LoadProfile, limits: LoadLimits) -> Self {
-        Self { profile, limits }
+        Self {
+            profile,
+            limits,
+            purpose: LoadPurpose::Executable,
+        }
+    }
+
+    pub const fn with_purpose(mut self, purpose: LoadPurpose) -> Self {
+        self.purpose = purpose;
+        self
+    }
+
+    pub const fn purpose(&self) -> LoadPurpose {
+        self.purpose
     }
 
     pub const fn profile(&self) -> &LoadProfile {

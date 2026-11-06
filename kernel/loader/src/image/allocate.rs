@@ -16,7 +16,7 @@
 
 use super::{map::MappedImage, LoadRequest};
 use crate::{
-    elf::{ElfHeaderInfo, LoadSegmentInfo},
+    elf::{DynamicInfo, ElfHeaderInfo, LoadSegmentInfo},
     error::{ErrorContext, LoadErrorKind, LoadStage},
     memory::{AllocationOffset, ImageMapping, TargetAddress, TargetRange},
     reader::ElfReader,
@@ -33,6 +33,7 @@ pub(crate) struct AllocatedImage<R: ElfReader, A: ImageMapping> {
     pub(super) request: LoadRequest,
     pub(super) header: ElfHeaderInfo,
     pub(super) segments: Vec<LoadSegmentInfo>,
+    pub(super) dynamic: Option<DynamicInfo>,
     pub(super) relro: Option<TargetRange>,
     pub(super) image_range: TargetRange,
 }
@@ -45,27 +46,32 @@ impl<R: ElfReader, A: ImageMapping> AllocatedImage<R, A> {
 
     fn map_inner(mut self) -> LoadResult<MappedImage<A>> {
         let base = self.allocation.base();
-        let entry_offset =
-            TargetAddress::new(self.header.entry()).checked_sub(self.image_range.start())?;
-        let entry = base.checked_add(entry_offset)?;
-        let entry_mode = self.request.profile().entry_mode();
-        let instruction_alignment = u64::from(entry_mode.instruction_alignment());
-        // p_align may be weaker than instruction alignment. Check the actual
-        // relocated entry before any bytes are read or destinations modified.
-        if entry
-            .get()
-            .checked_rem(instruction_alignment)
-            .is_some_and(|remainder| remainder != 0)
-        {
-            return Err(LoadError::new(
-                LoadErrorKind::InvalidAlignment,
-                ErrorContext::TargetRange {
-                    start: entry,
-                    len: u64::from(entry_mode.minimum_instruction_size()),
-                    align: instruction_alignment,
-                },
-            ));
-        }
+        let entry = if self.header.entry() == 0 {
+            None
+        } else {
+            let entry_offset =
+                TargetAddress::new(self.header.entry()).checked_sub(self.image_range.start())?;
+            let entry = base.checked_add(entry_offset)?;
+            let entry_mode = self.request.profile().entry_mode();
+            let instruction_alignment = u64::from(entry_mode.instruction_alignment());
+            // p_align may be weaker than instruction alignment. Check the actual
+            // relocated entry before any bytes are read or destinations modified.
+            if entry
+                .get()
+                .checked_rem(instruction_alignment)
+                .is_some_and(|remainder| remainder != 0)
+            {
+                return Err(LoadError::new(
+                    LoadErrorKind::InvalidAlignment,
+                    ErrorContext::TargetRange {
+                        start: entry,
+                        len: u64::from(entry_mode.minimum_instruction_size()),
+                        align: instruction_alignment,
+                    },
+                ));
+            }
+            Some(entry)
+        };
         let mut scratch = [0; COPY_BUFFER_SIZE];
         for segment in &self.segments {
             let offset =
@@ -113,6 +119,7 @@ impl<R: ElfReader, A: ImageMapping> AllocatedImage<R, A> {
             request: self.request,
             header: self.header,
             segments: self.segments,
+            dynamic: self.dynamic,
             relro: self.relro,
             image_range: self.image_range,
             entry,

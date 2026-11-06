@@ -27,6 +27,7 @@ pub enum LoadStage {
     Plan,
     Allocate,
     Map,
+    Decode,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -85,6 +86,8 @@ pub enum LimitKind {
     LoadSegmentCount,
     ImageSpan,
     SegmentAlignment,
+    DynamicEntryCount,
+    RelocationCount,
 }
 
 #[non_exhaustive]
@@ -116,6 +119,10 @@ pub enum ErrorContext {
         allocation_align: u64,
         offset: u64,
         len: u64,
+    },
+    DynamicTag {
+        tag: u64,
+        value: u64,
     },
     HeaderField {
         field: HeaderField,

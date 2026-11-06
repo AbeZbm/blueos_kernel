@@ -19,7 +19,7 @@
 #![cfg_attr(test, test_runner(loader_test_runner))]
 #![cfg_attr(test, reexport_test_harness_main = "loader_test_main")]
 
-//! ELF inspection, layout planning and memory-backed single-image loading.
+//! ELF inspection, image mapping and bounded dynamic metadata decoding.
 //!
 //! `ImageLoader<R: ElfReader>` reads and validates ELF headers through a
 //! source-independent reader. The `elf` and `image` stages stay crate-private

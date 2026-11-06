@@ -15,8 +15,10 @@
 //! ELF structures, dynamic tables and bounds-checked record decoding.
 //! Loading stages and image ownership are implemented in `image`.
 
+mod dynamic;
 mod header;
 mod program_header;
+mod relocation;
 mod segment;
 
 use crate::{
@@ -25,9 +27,11 @@ use crate::{
 };
 use goblin::{elf32, elf64};
 
+pub(crate) use dynamic::{read_dynamic, DynamicInfo};
 pub use header::{ElfClass, ElfData, ElfMachine};
 pub(crate) use header::{ElfHeaderInfo, ElfType};
 pub(crate) use program_header::ProgramHeaderInfo;
+pub(crate) use relocation::{RelocationAddend, RelocationRecord};
 pub(crate) use segment::LoadSegmentInfo;
 
 /// A byte range in the ELF input file, independent of target addresses.

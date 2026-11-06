@@ -12,13 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Initialized segments; relocation, cache synchronization and protection follow later.
+//! Initialized segments and decoding of their runtime metadata.
+//! Relocation, cache synchronization and protection follow later.
 
-use super::LoadRequest;
+use super::{decode::DecodedImage, LoadRequest};
 use crate::{
-    elf::{ElfHeaderInfo, LoadSegmentInfo},
+    elf::{DynamicInfo, ElfHeaderInfo, LoadSegmentInfo, RelocationRecord},
+    error::{ErrorContext, LimitKind, LoadErrorKind, LoadStage},
     memory::{AllocationOffset, ImageMapping, TargetAddress, TargetRange},
-    LoadResult,
+    LoadError, LoadResult,
 };
 use alloc::vec::Vec;
 
@@ -28,10 +30,11 @@ pub(crate) struct MappedImage<A: ImageMapping> {
     pub(super) request: LoadRequest,
     pub(super) header: ElfHeaderInfo,
     pub(super) segments: Vec<LoadSegmentInfo>,
+    pub(super) dynamic: Option<DynamicInfo>,
     /// Original ELF virtual range, retained for protection after relocation.
     pub(super) relro: Option<TargetRange>,
     pub(super) image_range: TargetRange,
-    pub(super) entry: TargetAddress,
+    pub(super) entry: Option<TargetAddress>,
 }
 
 impl<A: ImageMapping> MappedImage<A> {
@@ -39,7 +42,7 @@ impl<A: ImageMapping> MappedImage<A> {
         &self.allocation
     }
 
-    pub(crate) const fn entry(&self) -> TargetAddress {
+    pub(crate) const fn entry(&self) -> Option<TargetAddress> {
         self.entry
     }
 
@@ -50,5 +53,68 @@ impl<A: ImageMapping> MappedImage<A> {
 
     pub(crate) fn read(&self, offset: AllocationOffset, dst: &mut [u8]) -> LoadResult<()> {
         self.allocation.read(offset, dst)
+    }
+
+    pub(crate) fn decode(self) -> LoadResult<DecodedImage<A>> {
+        self.decode_inner()
+            .map_err(|error| error.at_stage(LoadStage::Decode))
+    }
+
+    fn decode_inner(self) -> LoadResult<DecodedImage<A>> {
+        let mut relocations = Vec::new();
+        if let Some(dynamic) = &self.dynamic {
+            let class = self.header.class();
+            let mut total = 0u64;
+            for table in dynamic.relocation_tables() {
+                total = total
+                    .checked_add(table.range.len() / table.format.entry_size(class))
+                    .ok_or_else(|| {
+                        LoadError::new(LoadErrorKind::IntegerOverflow, ErrorContext::None)
+                    })?;
+            }
+            let capacity = usize::try_from(total).map_err(|_| {
+                LoadError::new(
+                    LoadErrorKind::ResourceLimit,
+                    ErrorContext::Limit {
+                        resource: LimitKind::RelocationCount,
+                        actual: total,
+                        maximum: usize::MAX as u64,
+                    },
+                )
+            })?;
+            relocations
+                .try_reserve_exact(capacity)
+                .map_err(|_| LoadError::new(LoadErrorKind::OutOfMemory, ErrorContext::None))?;
+            let mut raw = [0; 24];
+            for table in dynamic.relocation_tables() {
+                if table.range.is_empty() {
+                    continue;
+                }
+                let size = table.format.entry_size(class);
+                let offset = AllocationOffset::new(
+                    table.range.start().checked_sub(self.image_range.start())?,
+                );
+                for index in 0..table.range.len() / size {
+                    self.allocation
+                        .read(offset.checked_add(index * size)?, &mut raw[..size as usize])?;
+                    relocations.push(RelocationRecord::decode(
+                        &raw[..size as usize],
+                        class,
+                        self.header.endian(),
+                        table.format,
+                    )?);
+                }
+            }
+        }
+        Ok(DecodedImage {
+            allocation: self.allocation,
+            request: self.request,
+            segments: self.segments,
+            relro: self.relro,
+            image_range: self.image_range,
+            entry: self.entry,
+            dynamic: self.dynamic,
+            relocations,
+        })
     }
 }

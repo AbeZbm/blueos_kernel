@@ -362,7 +362,7 @@ fn planning_budgets_include_holes_and_alignment_padding() {
                 ..ProgramHeaderFixture::load()
             })
             .build();
-        let limits = LoadLimits::new(64 * 1024 * 1024, 128, 32, 0x3000, 0x1000);
+        let limits = LoadLimits::new(64 * 1024 * 1024, 128, 32, 0x3000, 0x1000, 1024, 64 * 1024);
         assert_eq!(LoadLimits::DEFAULT, LoadLimits::default());
         assert_eq!(
             plan(&bytes, profile, limits).unwrap().image_range().len(),
