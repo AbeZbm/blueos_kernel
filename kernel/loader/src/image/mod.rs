@@ -12,10 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Single-image validation, layout, mapping and dynamic metadata decoding.
-//! Follow admit, inspect, plan, allocate, map, then decode. Planning scans dynamic
-//! tags once from the stable reader; decode reads relocation records from the
-//! mapped image. Relocation, cache synchronization and protection follow later.
+//! Single-image validation, layout, mapping, decoding and relative relocation.
+//! Follow admit, inspect, plan, allocate, map, decode, then relocate. Planning
+//! scans dynamic tags once from the stable reader; decode reads records from the
+//! mapped image. Relative relocation validates every write before applying any;
+//! cache synchronization and protection follow later.
 //! ELF table parsing and record formats are implemented in `crate::elf`.
 
 mod admit;
@@ -25,8 +26,10 @@ mod image_loader;
 mod inspect;
 mod map;
 mod plan;
+mod relocate;
 
 pub(crate) use decode::DecodedImage;
 pub(crate) use image_loader::{ImageLoader, LoadRequest};
 pub(crate) use map::MappedImage;
 pub(crate) use plan::PlannedImage;
+pub(crate) use relocate::RelocatedImage;

@@ -28,6 +28,7 @@ pub enum LoadStage {
     Allocate,
     Map,
     Decode,
+    Relocate,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -124,6 +125,11 @@ pub enum ErrorContext {
         tag: u64,
         value: u64,
     },
+    Relocation {
+        target: TargetAddress,
+        raw_type: u32,
+        symbol_index: u32,
+    },
     HeaderField {
         field: HeaderField,
         value: u64,
@@ -147,6 +153,23 @@ pub struct LoadError {
 }
 
 impl LoadError {
+    /// Identify a relocation record independently of its source table format.
+    pub(crate) fn relocation(
+        target: TargetAddress,
+        raw_type: u32,
+        symbol_index: u32,
+        kind: LoadErrorKind,
+    ) -> Self {
+        Self::new(
+            kind,
+            ErrorContext::Relocation {
+                target,
+                raw_type,
+                symbol_index,
+            },
+        )
+    }
+
     /// Describe a program-header failure without coupling loading stages.
     pub(crate) fn program_header(
         index: u16,

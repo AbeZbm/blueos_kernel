@@ -19,7 +19,7 @@
 #![cfg_attr(test, test_runner(loader_test_runner))]
 #![cfg_attr(test, reexport_test_harness_main = "loader_test_main")]
 
-//! ELF inspection, image mapping and bounded dynamic metadata decoding.
+//! ELF inspection, image mapping, dynamic decoding and relative relocation.
 //!
 //! `ImageLoader<R: ElfReader>` reads and validates ELF headers through a
 //! source-independent reader. The `elf` and `image` stages stay crate-private
@@ -40,6 +40,7 @@ pub use reader::ElfReader;
 extern crate alloc;
 mod elf;
 mod image;
+mod relocation;
 
 #[cfg(test)]
 extern crate rsrt;

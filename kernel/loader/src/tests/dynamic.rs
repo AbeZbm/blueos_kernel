@@ -14,6 +14,10 @@
 
 //! Dynamic admission, bounded table scanning and relocation wire decoding.
 
+// Relocation tests reuse the same dynamic ELF fixture and observed mapping.
+#[path = "relocation.rs"]
+mod relocation;
+
 use super::fixture::{ElfFixtureBuilder, ProgramHeaderFixture};
 use crate::{
     elf::RelocationAddend,
@@ -271,6 +275,7 @@ struct State {
     drops: Cell<usize>,
     live: Cell<usize>,
     fail_read: Cell<Option<usize>>,
+    fail_write: Cell<Option<usize>>,
 }
 
 #[must_use = "the input retains its read observer"]
@@ -390,6 +395,9 @@ impl ImageMapping for Allocation {
         let range = self.range(offset, src.len())?;
         self.bytes[range].copy_from_slice(src);
         self.state.writes.set(self.state.writes.get() + 1);
+        if self.state.fail_write.get() == Some(self.state.writes.get()) {
+            return Err(LoadError::new(LoadErrorKind::Io, ErrorContext::None));
+        }
         Ok(())
     }
     fn zero(&mut self, offset: AllocationOffset, len: u64) -> LoadResult<()> {

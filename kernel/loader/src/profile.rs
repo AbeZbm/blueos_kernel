@@ -15,7 +15,7 @@
 //! Caller-supplied ELF architecture, ABI and admission policies, and resource limits.
 
 use crate::{
-    elf::{DynamicInfo, ElfHeaderInfo, ElfType},
+    elf::{DynamicInfo, ElfHeaderInfo, ElfType, RelocationAddend, RelocationRecord},
     error::{ErrorContext, HeaderField, LimitKind, LoadErrorKind, ProgramHeaderField},
     memory::MemoryPermissions,
     LoadError, LoadResult,
@@ -33,6 +33,7 @@ use goblin::elf::{
         PF_R, PF_W, PF_X, PT_DYNAMIC, PT_GNU_EH_FRAME, PT_GNU_RELRO, PT_GNU_STACK, PT_INTERP,
         PT_LOAD, PT_NOTE, PT_NULL, PT_PHDR, PT_TLS,
     },
+    reloc::{R_AARCH64_NONE, R_AARCH64_RELATIVE, R_RISCV_NONE, R_RISCV_RELATIVE},
 };
 
 pub use crate::elf::{ElfClass, ElfData, ElfMachine};
@@ -282,6 +283,39 @@ pub struct LoadProfile {
 }
 
 impl LoadProfile {
+    /// Admit currently implemented single-image operations and explicit addends.
+    /// `None` denotes a no-op; `Some` supplies the RELATIVE addend.
+    pub(crate) fn check_relative_relocation(
+        &self,
+        record: &RelocationRecord,
+    ) -> LoadResult<Option<i64>> {
+        let unsupported = || {
+            LoadError::relocation(
+                record.offset,
+                record.raw_type,
+                record.symbol_index,
+                LoadErrorKind::UnsupportedByProfile,
+            )
+        };
+        let (none, relative) = match (self.machine, self.class) {
+            (ElfMachine::Riscv, ElfClass::Elf32 | ElfClass::Elf64) => {
+                (R_RISCV_NONE, R_RISCV_RELATIVE)
+            }
+            (ElfMachine::Aarch64, ElfClass::Elf64) => (R_AARCH64_NONE, R_AARCH64_RELATIVE),
+            _ => return Err(unsupported()),
+        };
+        if record.raw_type == none {
+            return Ok(None);
+        }
+        if record.raw_type != relative {
+            return Err(unsupported());
+        }
+        match record.addend {
+            RelocationAddend::Explicit(addend) => Ok(Some(addend)),
+            RelocationAddend::Implicit => Err(unsupported()),
+        }
+    }
+
     /// Admit the OS ABI without treating a recognized but unsupported ABI as malformed ELF.
     pub(crate) fn check_ident_abi(&self, osabi: u8, abi_version: u8) -> LoadResult<()> {
         if !matches!(osabi, ELFOSABI_NONE | ELFOSABI_GNU) {
