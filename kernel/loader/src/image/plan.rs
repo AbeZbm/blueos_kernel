@@ -14,7 +14,7 @@
 
 //! Validated single-image layout; no backing has been reserved or modified.
 
-use super::{allocate::AllocatedImage, LoadRequest};
+use super::allocate::AllocatedImage;
 use crate::{
     elf::{DynamicInfo, ElfClass, ElfHeaderInfo, ElfType, LoadSegmentInfo},
     error::{ErrorContext, HeaderField, LoadErrorKind, LoadStage},
@@ -23,7 +23,7 @@ use crate::{
         TargetAddress, TargetRange,
     },
     reader::ElfReader,
-    LoadError, LoadResult,
+    LoadError, LoadRequest, LoadResult,
 };
 use alloc::vec::Vec;
 
@@ -41,6 +41,10 @@ pub(crate) struct PlannedImage<R: ElfReader> {
 }
 
 impl<R: ElfReader> PlannedImage<R> {
+    pub(crate) fn dynamic(&self) -> Option<&DynamicInfo> {
+        self.dynamic.as_ref()
+    }
+
     pub(crate) fn segments(&self) -> &[LoadSegmentInfo] {
         &self.segments
     }

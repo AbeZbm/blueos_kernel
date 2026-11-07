@@ -22,16 +22,22 @@
 //! synchronize executable ranges through `CodeCache` and remove RELRO writes.
 
 pub(crate) mod address;
-mod flat_memory_mapper;
 mod layout;
-mod protection;
 
 use crate::LoadResult;
 
 pub use address::{TargetAddress, TargetRange};
-pub use flat_memory_mapper::{FlatImageAllocation, MemoryMapper, MemoryRegion};
 pub use layout::{AllocationOffset, ImageLayout, MemoryPermissions, Placement, SegmentLayout};
-pub use protection::{ProtectionLevel, ProtectionRange};
+
+/// Required and provided enforcement levels shared with memory backends.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ProtectionLevel {
+    /// Permissions are metadata; CPU accesses are not restricted by this backend.
+    #[default]
+    LogicalOnly,
+    /// Permissions are enforced for the image's execution context.
+    HardwareEnforced,
+}
 
 /// Prepares image storage and transfers its lifetime to the returned mapping.
 ///

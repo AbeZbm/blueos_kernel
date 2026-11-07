@@ -21,11 +21,9 @@ use super::{
 use crate::{
     error::{ErrorContext, LoadErrorKind, LoadStage},
     image::RelocatedImage,
-    memory::{
-        AllocationOffset, MemoryMapper, MemoryPermissions, ProtectionLevel, ProtectionRange,
-        TargetAddress, TargetRange,
-    },
+    memory::{AllocationOffset, MemoryPermissions, ProtectionLevel, TargetAddress, TargetRange},
     profile::{ElfClass, LoadLimits, LoadProfile, LoadPurpose},
+    tests::support::{MemoryMapper, ProtectionRange},
     CodeCache, ImageMapping, LoadError, LoadResult,
 };
 use alloc::{rc::Rc, vec, vec::Vec};

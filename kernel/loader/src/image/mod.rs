@@ -33,7 +33,7 @@ mod relocate;
 mod seal;
 
 pub(crate) use decode::DecodedImage;
-pub(crate) use image_loader::{ImageLoader, LoadRequest};
+pub(crate) use image_loader::ImageLoader;
 pub(crate) use map::MappedImage;
 pub(crate) use plan::PlannedImage;
 pub(crate) use relocate::RelocatedImage;

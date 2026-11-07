@@ -27,15 +27,18 @@ use goblin::elf::{
     Elf,
 };
 
-use super::fixture::{ElfFixtureBuilder, ProgramHeaderFixture, SliceElfReader};
+use super::{
+    fixture::{ElfFixtureBuilder, ProgramHeaderFixture},
+    support::SliceElfReader,
+};
 use crate::{
     elf::{ElfHeaderInfo, ElfType, ELF_IDENT_SIZE},
     error::{ErrorContext, HeaderField, LimitKind, LoadErrorKind, LoadStage, ProgramHeaderField},
-    image::{ImageLoader, LoadRequest},
+    image::ImageLoader,
     memory::TargetAddress,
     profile::{ElfClass, ElfData, ElfMachine, LoadLimits, LoadProfile, ProgramHeaderPolicy},
     reader::ElfReader,
-    LoadError, LoadResult,
+    LoadError, LoadRequest, LoadResult,
 };
 
 const PROFILES: [LoadProfile; 3] = [

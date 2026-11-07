@@ -29,10 +29,12 @@ use crate::{
 use alloc::vec::Vec;
 use goblin::elf::dynamic::{DT_FINI, DT_FINI_ARRAY, DT_INIT, DT_INIT_ARRAY, DT_PREINIT_ARRAY};
 
-/// Addresses are valid only while the owning sealed image remains alive.
-/// The host calls these functions using its ABI and chooses when to run them.
+/// Addresses are valid only while the owning image remains alive.
+/// These are target addresses, not typed host function pointers. The host
+/// runtime determines the compatible calling ABI, arguments and execution
+/// context, and chooses when to run the callbacks.
 #[derive(Debug, Default)]
-pub(crate) struct LifecyclePlan {
+pub struct LifecyclePlan {
     preinit: Vec<TargetAddress>,
     init: Vec<TargetAddress>,
     fini: Vec<TargetAddress>,
@@ -65,17 +67,17 @@ impl LifecyclePlan {
     }
 
     /// Executable-only callbacks, run before ordinary initialization.
-    pub(crate) fn preinit(&self) -> &[TargetAddress] {
+    pub fn preinit(&self) -> &[TargetAddress] {
         &self.preinit
     }
 
     /// DT_INIT first, followed by DT_INIT_ARRAY in forward order.
-    pub(crate) fn init(&self) -> &[TargetAddress] {
+    pub fn init(&self) -> &[TargetAddress] {
         &self.init
     }
 
     /// DT_FINI_ARRAY in reverse order, followed by DT_FINI.
-    pub(crate) fn fini(&self) -> &[TargetAddress] {
+    pub fn fini(&self) -> &[TargetAddress] {
         &self.fini
     }
 }

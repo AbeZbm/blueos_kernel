@@ -21,14 +21,56 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use crate::{
+use super::loader::{
     error::{ErrorContext, LoadErrorKind},
     memory::{
         AllocationOffset, ImageAllocator, ImageLayout, ImageMapping, MemoryPermissions, Placement,
-        ProtectionLevel, ProtectionRange, TargetAddress,
+        ProtectionLevel, TargetAddress,
     },
     LoadError, LoadResult,
 };
+
+/// A nonempty permission range relative to the image allocation base.
+///
+/// Backends may use these records to track their current access rules.
+/// Updating a mapping only requires the interval passed to `set_permissions`.
+/// NONE spans need not have physical backing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProtectionRange {
+    allocation_offset: AllocationOffset,
+    len: u64,
+    permissions: MemoryPermissions,
+}
+
+impl ProtectionRange {
+    pub const fn new(
+        allocation_offset: AllocationOffset,
+        len: u64,
+        permissions: MemoryPermissions,
+    ) -> Self {
+        Self {
+            allocation_offset,
+            len,
+            permissions,
+        }
+    }
+
+    pub const fn allocation_offset(&self) -> AllocationOffset {
+        self.allocation_offset
+    }
+
+    pub const fn len(&self) -> u64 {
+        self.len
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub const fn permissions(&self) -> MemoryPermissions {
+        self.permissions
+    }
+}
 
 /// A fixed address range authorized for the flat memory backend.
 ///
@@ -50,8 +92,8 @@ impl MemoryRegion {
     /// `[start, end)` must remain valid and mapped for the advertised permissions
     /// for every mapper and allocation using it. The caller must prevent aliasing
     /// Rust references, execution, and conflicting accesses while it is borrowed.
-    /// Overlapping region declarations and legacy mappers must not bypass that
-    /// exclusivity; only allocations using this same declaration share its flag.
+    /// Overlapping region declarations must not bypass that exclusivity; only
+    /// allocations using this same declaration share its occupancy flag.
     pub const unsafe fn new(start: usize, end: usize, permissions: MemoryPermissions) -> Self {
         Self {
             start,

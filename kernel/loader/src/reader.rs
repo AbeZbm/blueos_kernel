@@ -34,3 +34,18 @@ pub trait ElfReader {
     /// The caller must discard `dst` after an error; its contents are unspecified.
     fn read_exact_at(&self, offset: u64, dst: &mut [u8]) -> LoadResult<()>;
 }
+
+impl<R: ElfReader + ?Sized> ElfReader for &R {
+    fn len(&self) -> LoadResult<u64> {
+        (**self).len()
+    }
+
+    #[inline]
+    fn is_empty(&self) -> LoadResult<bool> {
+        (**self).is_empty()
+    }
+
+    fn read_exact_at(&self, offset: u64, dst: &mut [u8]) -> LoadResult<()> {
+        (**self).read_exact_at(offset, dst)
+    }
+}

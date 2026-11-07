@@ -14,16 +14,20 @@
 
 //! Backend-mediated mapping, ownership, malformed results and partial failure.
 
-use super::fixture::{ElfFixtureBuilder, ProgramHeaderFixture, SliceElfReader};
+use super::{
+    fixture::{ElfFixtureBuilder, ProgramHeaderFixture},
+    support::SliceElfReader,
+};
 use crate::{
     error::{ErrorContext, LoadErrorKind, LoadStage},
-    image::{ImageLoader, LoadRequest, PlannedImage},
+    image::{ImageLoader, PlannedImage},
     memory::{
-        AllocationOffset, ImageLayout, MemoryMapper, MemoryPermissions, MemoryRegion, Placement,
-        ProtectionLevel, SegmentLayout, TargetAddress, TargetRange,
+        AllocationOffset, ImageLayout, MemoryPermissions, Placement, ProtectionLevel,
+        SegmentLayout, TargetAddress, TargetRange,
     },
     profile::{ElfClass, LoadLimits, LoadProfile},
-    ElfReader, ImageAllocator, ImageMapping, LoadError, LoadResult,
+    tests::support::{MemoryMapper, MemoryRegion},
+    ElfReader, ImageAllocator, ImageMapping, LoadError, LoadRequest, LoadResult,
 };
 use alloc::{boxed::Box, rc::Rc, vec, vec::Vec};
 use blueos_test_macro::test;

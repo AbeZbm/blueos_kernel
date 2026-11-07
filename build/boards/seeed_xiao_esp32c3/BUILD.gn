@@ -65,7 +65,14 @@ blueos_board("seeed_xiao_esp32c3") {
     "//example/agent_loop:agent_loop",
   ]
   _check_all = check_all_on_virtual_board + clippy_all_on_virtual_board
-  check_all = filter_exclude(_check_all, [ "//kernel/adapter*" ])
+
+  # The default factory partition is 1 MiB and the loader test images exceed
+  # it, so keep loader execution checks on the QEMU boards for now.
+  check_all = filter_exclude(_check_all,
+                             [
+                               "//kernel/adapter*",
+                               "//kernel/loader*",
+                             ])
 
   check_all += [ "//kernel/adapter/esp_radio_sys:run_esp_radio_sys_unittest" ]
 }

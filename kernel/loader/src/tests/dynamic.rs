@@ -17,6 +17,8 @@
 // Relocation tests reuse the same dynamic ELF fixture and observed mapping.
 #[path = "lifecycle.rs"]
 mod lifecycle;
+#[path = "load.rs"]
+mod load;
 #[path = "relocation.rs"]
 mod relocation;
 #[path = "seal.rs"]
@@ -26,13 +28,13 @@ use super::fixture::{ElfFixtureBuilder, ProgramHeaderFixture};
 use crate::{
     elf::RelocationAddend,
     error::{ErrorContext, LimitKind, LoadErrorKind, LoadStage},
-    image::{DecodedImage, ImageLoader, LoadRequest, PlannedImage},
+    image::{DecodedImage, ImageLoader, PlannedImage},
     memory::{
-        AllocationOffset, ImageLayout, MemoryPermissions, Placement, ProtectionLevel,
-        ProtectionRange, TargetAddress,
+        AllocationOffset, ImageLayout, MemoryPermissions, Placement, ProtectionLevel, TargetAddress,
     },
     profile::{ElfClass, ElfData, LoadLimits, LoadProfile, LoadPurpose},
-    ElfReader, ImageAllocator, ImageMapping, LoadError, LoadResult,
+    tests::support::ProtectionRange,
+    ElfReader, ImageAllocator, ImageMapping, LoadError, LoadRequest, LoadResult,
 };
 use alloc::{rc::Rc, vec, vec::Vec};
 use blueos_test_macro::test;

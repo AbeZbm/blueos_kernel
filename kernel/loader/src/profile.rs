@@ -414,6 +414,20 @@ impl LoadProfile {
         Ok(())
     }
 
+    /// Standalone loading cannot obtain providers for declared dependencies.
+    pub(crate) fn check_standalone_dynamic(&self, dynamic: &DynamicInfo) -> LoadResult<()> {
+        if let Some(value) = dynamic.needed().next() {
+            return Err(LoadError::new(
+                LoadErrorKind::UnsupportedByProfile,
+                ErrorContext::DynamicTag {
+                    tag: DT_NEEDED,
+                    value,
+                },
+            ));
+        }
+        Ok(())
+    }
+
     /// Reject runtime semantics not provided by the selected loading profile.
     pub(crate) fn check_dynamic_image(
         &self,

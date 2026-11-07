@@ -19,12 +19,12 @@ use goblin::elf::program_header::{
     PT_DYNAMIC, PT_GNU_RELRO, PT_GNU_STACK, PT_LOAD, PT_NULL, PT_PHDR,
 };
 
-use super::{inspect::InspectedImage, LoadRequest};
+use super::inspect::InspectedImage;
 use crate::{
     elf::{ElfHeaderInfo, ProgramHeaderInfo, ELF64_PROGRAM_HEADER_SIZE},
     error::{ErrorContext, LoadErrorKind, LoadStage, ProgramHeaderField},
     reader::ElfReader,
-    LoadError, LoadResult,
+    LoadError, LoadRequest, LoadResult,
 };
 
 /// An admitted ELF header retaining its reader for program-header inspection.

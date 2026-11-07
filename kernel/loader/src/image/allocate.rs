@@ -14,13 +14,13 @@
 
 //! Populate prepared segment backing through the memory backend.
 
-use super::{map::MappedImage, LoadRequest};
+use super::map::MappedImage;
 use crate::{
     elf::{DynamicInfo, ElfHeaderInfo, LoadSegmentInfo},
     error::{ErrorContext, LoadErrorKind, LoadStage},
     memory::{AllocationOffset, ImageMapping, MemoryPermissions, TargetAddress, TargetRange},
     reader::ElfReader,
-    LoadError, LoadResult,
+    LoadError, LoadRequest, LoadResult,
 };
 use alloc::vec::Vec;
 

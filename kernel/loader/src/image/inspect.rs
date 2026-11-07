@@ -14,14 +14,14 @@
 
 //! Checked program headers and read-only planning of executable image layouts.
 
-use super::{plan::PlannedImage, LoadRequest};
+use super::plan::PlannedImage;
 use crate::{
     elf::{read_dynamic, ElfClass, ElfHeaderInfo, FileRange, LoadSegmentInfo, ProgramHeaderInfo},
     error::{ErrorContext, HeaderField, LoadErrorKind, LoadStage, ProgramHeaderField},
     memory::{MemoryPermissions, TargetAddress, TargetRange},
     profile::LoadPurpose,
     reader::ElfReader,
-    LoadError, LoadResult,
+    LoadError, LoadRequest, LoadResult,
 };
 use alloc::vec::Vec;
 use goblin::elf::program_header::{PT_DYNAMIC, PT_GNU_RELRO, PT_LOAD};

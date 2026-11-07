@@ -16,12 +16,12 @@
 
 use alloc::vec::Vec;
 
-use super::{relocate::RelocatedImage, LoadRequest};
+use super::relocate::RelocatedImage;
 use crate::{
     elf::{DynamicInfo, LoadSegmentInfo, RelocationRecord},
     error::LoadStage,
     memory::{ImageMapping, TargetAddress, TargetRange},
-    relocation, LoadResult,
+    relocation, LoadRequest, LoadResult,
 };
 
 #[must_use = "retain the decoded image to keep its allocation alive"]

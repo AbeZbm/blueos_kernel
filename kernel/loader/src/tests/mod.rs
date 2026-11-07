@@ -21,6 +21,10 @@ mod image;
 mod mapping;
 mod memory;
 mod plan;
+#[path = "../../tests/support/mod.rs"]
+mod support;
+
+use crate as loader;
 
 use blueos_test_macro::test;
 use goblin::elf::{
@@ -34,7 +38,8 @@ use crate::{
     reader::ElfReader,
     LoadError,
 };
-use fixture::{ElfFixtureBuilder, SliceElfReader};
+use fixture::ElfFixtureBuilder;
+use support::SliceElfReader;
 
 #[test]
 fn fixture_builder_emits_a_parseable_elf32_header() {
@@ -70,6 +75,32 @@ fn reader_supports_independent_positional_reads() {
     reader.read_exact_at(0, &mut magic).unwrap();
     assert_eq!(u16::from_le_bytes(machine), EM_RISCV);
     assert_eq!(&magic, b"\x7fELF");
+}
+
+struct OverriddenEmptyReader;
+
+impl ElfReader for OverriddenEmptyReader {
+    fn len(&self) -> crate::LoadResult<u64> {
+        Ok(1)
+    }
+
+    fn is_empty(&self) -> crate::LoadResult<bool> {
+        Ok(true)
+    }
+
+    fn read_exact_at(&self, _offset: u64, _dst: &mut [u8]) -> crate::LoadResult<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn borrowed_reader_forwards_is_empty() {
+    fn read_is_empty<R: ElfReader>(reader: R) -> bool {
+        reader.is_empty().unwrap()
+    }
+
+    // `len()` says nonempty, so this passes only if the override is forwarded.
+    assert!(read_is_empty(&OverriddenEmptyReader));
 }
 
 #[test]

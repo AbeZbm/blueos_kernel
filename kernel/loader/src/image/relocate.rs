@@ -14,13 +14,13 @@
 
 //! A relocated image awaiting cache synchronization and final protection.
 
-use super::{seal::SealedImage, LoadRequest};
+use super::seal::SealedImage;
 use crate::{
     elf::{DynamicInfo, LoadSegmentInfo, RelocationRecord},
     error::{ErrorContext, LoadErrorKind, LoadStage},
     lifecycle::LifecyclePlan,
     memory::{AllocationOffset, ImageMapping, MemoryPermissions, TargetAddress, TargetRange},
-    CodeCache, LoadError, LoadResult,
+    CodeCache, LoadError, LoadRequest, LoadResult,
 };
 use alloc::vec::Vec;
 

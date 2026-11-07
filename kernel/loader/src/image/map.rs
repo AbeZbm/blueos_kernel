@@ -15,12 +15,12 @@
 //! Initialized, segment-protected images and runtime metadata decoding.
 //! Relocation, cache synchronization and RELRO protection follow later.
 
-use super::{decode::DecodedImage, LoadRequest};
+use super::decode::DecodedImage;
 use crate::{
     elf::{DynamicInfo, ElfHeaderInfo, LoadSegmentInfo, RelocationRecord},
     error::{ErrorContext, LimitKind, LoadErrorKind, LoadStage},
     memory::{AllocationOffset, ImageMapping, TargetAddress, TargetRange},
-    LoadError, LoadResult,
+    LoadError, LoadRequest, LoadResult,
 };
 use alloc::vec::Vec;
 

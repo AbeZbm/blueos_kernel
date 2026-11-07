@@ -17,10 +17,10 @@
 use crate::{
     error::{ErrorContext, LoadErrorKind},
     memory::{
-        AllocationOffset, ImageAllocator, ImageLayout, ImageMapping, MemoryMapper,
-        MemoryPermissions, MemoryRegion, Placement, ProtectionLevel, SegmentLayout, TargetAddress,
-        TargetRange,
+        AllocationOffset, ImageAllocator, ImageLayout, ImageMapping, MemoryPermissions, Placement,
+        ProtectionLevel, SegmentLayout, TargetAddress, TargetRange,
     },
+    tests::support::{MemoryMapper, MemoryRegion},
 };
 use alloc::{boxed::Box, vec};
 use blueos_infra::storage::Storage;
