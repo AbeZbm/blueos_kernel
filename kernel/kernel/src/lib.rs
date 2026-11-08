@@ -64,6 +64,8 @@
 
 extern crate alloc;
 pub mod allocator;
+#[cfg(loader_backend)]
+pub mod application;
 pub mod arch;
 #[cfg(kernel_async)]
 pub mod asynk;

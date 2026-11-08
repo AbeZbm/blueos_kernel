@@ -87,6 +87,16 @@ if (coverage || profile) {
   ]
 }
 
+# The kernel-side flat loader backends are built for the architectures whose
+# loader profiles and execution backends are supported.
+_loader_backend_enabled = board_toolchain_info.current_cpu == "riscv32" ||
+                          board_toolchain_info.current_cpu == "riscv64" ||
+                          board_toolchain_info.current_cpu == "aarch64"
+if (_loader_backend_enabled) {
+  _kernel_default_cfgs += [ "loader_backend" ]
+  _shared_deps += [ "//kernel/loader:blueos_loader" ]
+}
+
 build_rust("kernel_unittest") {
   testonly = true
   crate_name = "kernel_unittest"

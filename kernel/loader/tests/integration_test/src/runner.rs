@@ -14,31 +14,16 @@
 
 //! Host-file reads and native code publication for synchronous integration fixtures.
 
-use blueos_loader as loader;
+use blueos::application::adapters::KernelCodeCache;
 use blueos_loader::{
     error::{ErrorContext, LoadErrorKind},
-    memory::TargetRange,
-    profile::{LoadLimits, LoadProfile},
-    CodeCache, ElfReader, LoadError, LoadRequest, LoadResult,
+    ElfReader, LoadError, LoadResult,
 };
-#[path = "../../support/mod.rs"]
-mod support;
-use core::{cell::RefCell, ffi::CStr, marker::PhantomData};
+use core::{cell::RefCell, ffi::CStr};
 use semihosting::{
     fs::File,
     io::{Read, Seek, SeekFrom},
 };
-pub(super) use support::{FlatImageAllocation, MemoryMapper, MemoryRegion, SliceElfReader};
-
-pub(super) fn request() -> LoadRequest {
-    #[cfg(target_arch = "riscv32")]
-    let profile = LoadProfile::riscv32();
-    #[cfg(target_arch = "riscv64")]
-    let profile = LoadProfile::riscv64();
-    #[cfg(target_arch = "aarch64")]
-    let profile = LoadProfile::aarch64();
-    LoadRequest::new(profile, LoadLimits::DEFAULT)
-}
 
 #[cfg(loader_test_exec)]
 pub(super) mod fixed {
@@ -88,10 +73,14 @@ pub(super) mod fixed {
     pub const TEST_REGION_PERMISSIONS: loader::MemoryPermissions =
         parse_permissions(env!("LOADER_TEST_RELOCATION_PERMISSIONS"));
 
-    pub static TEST_REGIONS: [super::MemoryRegion; 1] = [unsafe {
+    pub static TEST_REGIONS: [blueos::application::adapters::MemoryRegion; 1] = [unsafe {
         // SAFETY: the board reserves this mapped range for the fixture,
         // and tests access it only while their image owns the region claim.
-        super::MemoryRegion::new(TEST_REGION_START, TEST_REGION_END, TEST_REGION_PERMISSIONS)
+        blueos::application::adapters::MemoryRegion::new(
+            TEST_REGION_START,
+            TEST_REGION_END,
+            TEST_REGION_PERMISSIONS,
+        )
     }];
 }
 
@@ -141,66 +130,13 @@ impl ElfReader for FileReader {
 }
 
 /// These fixtures return synchronously and do not block or create threads.
-/// Disable timer preemption until their entry returns so local cache maintenance
-/// covers the only CPU allowed to execute the loaded image, including SMP QEMU.
-#[must_use = "retain the local execution context until the loaded fixture returns"]
-pub(super) struct LocalCodeCache {
-    _interrupts: blueos::support::DisableInterruptGuard,
-    _local: PhantomData<*mut ()>,
-}
-
-impl LocalCodeCache {
-    pub(super) fn new() -> Self {
-        Self {
-            _interrupts: blueos::support::DisableInterruptGuard::new(),
-            _local: PhantomData,
-        }
-    }
-}
-
-impl CodeCache for LocalCodeCache {
-    fn synchronize(&mut self, executable: TargetRange) -> LoadResult<()> {
-        let end = executable.end()?;
-        let context = || ErrorContext::TargetRange {
-            start: executable.start(),
-            len: executable.len(),
-            align: 1,
-        };
-        let start = usize::try_from(executable.start().get())
-            .map_err(|_| LoadError::new(LoadErrorKind::IntegerOverflow, context()))?;
-        let end = usize::try_from(end.get())
-            .map_err(|_| LoadError::new(LoadErrorKind::IntegerOverflow, context()))?;
-        if start == end {
-            return Ok(());
-        }
-        #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
-        // SAFETY: only this pinned test context executes the prepared code.
-        unsafe {
-            core::arch::asm!("fence.i", options(nostack, preserves_flags));
-        }
-
-        #[cfg(target_arch = "aarch64")]
-        {
-            let ctr: usize;
-            // SAFETY: the integration runner executes in kernel context and the
-            // flat backend retains a local mapping for the complete range.
-            unsafe {
-                core::arch::asm!("mrs {ctr}, ctr_el0", ctr = out(reg) ctr,
-                    options(nostack, preserves_flags));
-                let data_line = 4usize << ((ctr >> 16) & 15);
-                for address in (start & !(data_line - 1)..end).step_by(data_line) {
-                    core::arch::asm!("dc cvau, {address}", address = in(reg) address,
-                        options(nostack, preserves_flags));
-                }
-                core::arch::asm!("dsb ish", options(nostack, preserves_flags));
-                let instruction_line = 4usize << (ctr & 15);
-                for address in (start & !(instruction_line - 1)..end).step_by(instruction_line) {
-                    core::arch::asm!("ic ivau, {address}", address = in(reg) address,
-                        options(nostack, preserves_flags));
-                }
-                core::arch::asm!("dsb ish", "isb", options(nostack, preserves_flags));
-            }
-        }
-        Ok(())
-    }
+/// Keep the test on one CPU until its entry returns so the kernel's local
+/// cache maintenance covers the only CPU allowed to execute the loaded image,
+/// including SMP QEMU.
+#[must_use = "retain the interrupt guard until the loaded fixture returns"]
+pub(super) fn pinned_cache() -> (blueos::support::DisableInterruptGuard, KernelCodeCache) {
+    (
+        blueos::support::DisableInterruptGuard::new(),
+        KernelCodeCache::new(),
+    )
 }

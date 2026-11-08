@@ -12,13 +12,17 @@ extern crate alloc;
 extern crate rsrt;
 
 mod runner;
-use runner::{
-    FileReader, FlatImageAllocation, LocalCodeCache, MemoryMapper, MemoryRegion, SliceElfReader,
+use blueos::application::adapters::{
+    FlatImageAllocation, MemoryMapper, MemoryRegion, SliceElfReader,
 };
+use runner::FileReader;
 // Import it just for the global allocator.
-use alloc::vec::Vec;
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use blueos_loader as loader;
-use core::ffi::{c_char, CStr};
+use core::{
+    ffi::{c_char, CStr},
+    sync::atomic::{AtomicBool, Ordering},
+};
 use librs::pthread;
 use semihosting::{io::Read, println};
 
@@ -86,7 +90,7 @@ mod test_elf_loader {
         }
     }
 
-    fn run(image: &loader::LoadedImage<FlatImageAllocation>, _cache: &LocalCodeCache) {
+    fn run(image: &loader::LoadedImage<FlatImageAllocation>) {
         // These fixtures do not define runtime lifecycle hooks.
         assert!(image.lifecycle().preinit().is_empty());
         assert!(image.lifecycle().init().is_empty());
@@ -114,24 +118,67 @@ mod test_elf_loader {
     #[test]
     fn test_load_elf_and_run() {
         let bytes = read_all(unsafe { LOADER_TEST_ELF_PATH }).unwrap();
-        let mut cache = LocalCodeCache::new();
+        let (_pinned, mut cache) = runner::pinned_cache();
         let image = loader::load_elf(
             SliceElfReader::new(&bytes),
-            runner::request(),
+            blueos::application::load_request(),
             new_mapper(),
             &mut cache,
         )
         .expect("load ELF from memory");
-        run(&image, &cache);
+        run(&image);
+    }
+
+    // A direct RTOS thread without a Process uses the kernel's production
+    // reader, flat allocator and cache backend. Loading and handing off the
+    // image must not depend on Process/VFS state.
+    #[test]
+    fn test_load_elf_in_unowned_rtos_thread() {
+        let bytes = read_all(unsafe { LOADER_TEST_ELF_PATH }).unwrap();
+        #[cfg(loader_test_exec)]
+        let regions = Some(&runner::fixed::TEST_REGIONS);
+        #[cfg(not(loader_test_exec))]
+        let regions = None;
+
+        let done = Arc::new(blueos::sync::ConstBarrier::<{ 2 }>::new());
+        let loaded = Arc::new(AtomicBool::new(false));
+        let done_w = done.clone();
+        let loaded_w = loaded.clone();
+        // The default thread stack is too small for ELF inspection on 32-bit
+        // release builds; the load runs in a thread with the app stack size.
+        let stack = blueos::thread::Stack::from_size(16 << 10).expect("loader test stack");
+        let mut t =
+            blueos::thread::Builder::new(blueos::thread::Entry::Closure(Box::new(move || {
+                let image = blueos::application::load_from_memory(&bytes, regions)
+                    .expect("load ELF in an unowned RTOS thread");
+                assert!(image.entry().is_some());
+                loaded_w.store(true, Ordering::Release);
+                done_w.wait();
+                blueos::scheduler::retire_me();
+            })))
+            .set_stack(stack)
+            .build();
+        assert!(t.process().is_none());
+        assert_eq!(
+            blueos::scheduler::queue_ready_thread(blueos::thread::IDLE, t),
+            Ok(())
+        );
+        done.wait();
+        assert!(loaded.load(Ordering::Acquire));
     }
 
     #[test]
     fn test_load_elf_from_file_and_run() {
         let input = open(unsafe { LOADER_TEST_ELF_PATH });
-        let mut cache = LocalCodeCache::new();
-        let image = loader::load_elf(input, runner::request(), new_mapper(), &mut cache)
-            .expect("load ELF through positional file reads");
-        run(&image, &cache);
+        let (_pinned, mut cache) = runner::pinned_cache();
+        let image = loader::load_elf(
+            input,
+            blueos::application::load_request(),
+            new_mapper(),
+            &mut cache,
+        )
+        .expect("load ELF through positional file reads");
+        run(&image);
     }
 
     fn open(ptr: *const c_char) -> FileReader {
@@ -142,31 +189,55 @@ mod test_elf_loader {
     #[test]
     fn test_invalid_entry() {
         let input = open(unsafe { INVALID_ENTRY_ELF_PATH });
-        let mut cache = LocalCodeCache::new();
-        assert!(loader::load_elf(input, runner::request(), new_mapper(), &mut cache).is_err());
+        let (_pinned, mut cache) = runner::pinned_cache();
+        assert!(loader::load_elf(
+            input,
+            blueos::application::load_request(),
+            new_mapper(),
+            &mut cache
+        )
+        .is_err());
     }
 
     #[test]
     fn test_invalid_magic() {
         let input = open(unsafe { INVALID_MAGIC_ELF_PATH });
-        let mut cache = LocalCodeCache::new();
-        assert!(loader::load_elf(input, runner::request(), new_mapper(), &mut cache).is_err());
+        let (_pinned, mut cache) = runner::pinned_cache();
+        assert!(loader::load_elf(
+            input,
+            blueos::application::load_request(),
+            new_mapper(),
+            &mut cache
+        )
+        .is_err());
     }
 
     #[test]
     fn test_invalid_segment_size() {
         let input = open(unsafe { INVALID_SEGMENT_SIZE_ELF_PATH });
-        let mut cache = LocalCodeCache::new();
-        assert!(loader::load_elf(input, runner::request(), new_mapper(), &mut cache).is_err());
+        let (_pinned, mut cache) = runner::pinned_cache();
+        assert!(loader::load_elf(
+            input,
+            blueos::application::load_request(),
+            new_mapper(),
+            &mut cache
+        )
+        .is_err());
     }
 
     #[cfg(loader_test_exec)]
     #[test]
     fn test_exec_requires_fixed_region_authorization() {
         let input = open(unsafe { LOADER_TEST_ELF_PATH });
-        let mut cache = LocalCodeCache::new();
+        let (_pinned, mut cache) = runner::pinned_cache();
         let mapper = MemoryMapper::new(None);
-        assert!(loader::load_elf(input, runner::request(), mapper, &mut cache).is_err());
+        assert!(loader::load_elf(
+            input,
+            blueos::application::load_request(),
+            mapper,
+            &mut cache
+        )
+        .is_err());
     }
 
     #[cfg(loader_test_exec)]
@@ -174,9 +245,15 @@ mod test_elf_loader {
     fn test_exec_rejects_out_of_range_without_writing() {
         let input = open(unsafe { LOADER_TEST_ELF_PATH });
         let before = unsafe { (TEST_REGION_START as *const u32).read_volatile() };
-        let mut cache = LocalCodeCache::new();
+        let (_pinned, mut cache) = runner::pinned_cache();
         let mapper = MemoryMapper::new(Some(&SHORT_REGIONS));
-        assert!(loader::load_elf(input, runner::request(), mapper, &mut cache).is_err());
+        assert!(loader::load_elf(
+            input,
+            blueos::application::load_request(),
+            mapper,
+            &mut cache
+        )
+        .is_err());
         let after = unsafe { (TEST_REGION_START as *const u32).read_volatile() };
         assert_eq!(after, before);
     }
@@ -185,27 +262,33 @@ mod test_elf_loader {
     #[test]
     fn test_exec_rejects_non_executable_region() {
         let input = open(unsafe { LOADER_TEST_ELF_PATH });
-        let mut cache = LocalCodeCache::new();
+        let (_pinned, mut cache) = runner::pinned_cache();
         let mapper = MemoryMapper::new(Some(&NON_EXEC_REGIONS));
-        assert!(loader::load_elf(input, runner::request(), mapper, &mut cache).is_err());
+        assert!(loader::load_elf(
+            input,
+            blueos::application::load_request(),
+            mapper,
+            &mut cache
+        )
+        .is_err());
     }
 
     #[cfg(loader_test_exec)]
     #[test]
     fn test_exec_releases_fixed_region_after_image_drop() {
         let bytes = read_all(unsafe { LOADER_TEST_ELF_PATH }).unwrap();
-        let mut cache = LocalCodeCache::new();
+        let (_pinned, mut cache) = runner::pinned_cache();
         let image = loader::load_elf(
             SliceElfReader::new(&bytes),
-            runner::request(),
+            blueos::application::load_request(),
             new_mapper(),
             &mut cache,
         )
         .expect("first fixed mapping");
-        run(&image, &cache);
+        run(&image);
         assert!(loader::load_elf(
             SliceElfReader::new(&bytes),
-            runner::request(),
+            blueos::application::load_request(),
             new_mapper(),
             &mut cache
         )
@@ -213,12 +296,12 @@ mod test_elf_loader {
         drop(image);
         let image = loader::load_elf(
             SliceElfReader::new(&bytes),
-            runner::request(),
+            blueos::application::load_request(),
             new_mapper(),
             &mut cache,
         )
         .expect("fixed region released and prepared again");
-        run(&image, &cache);
+        run(&image);
     }
 }
 
